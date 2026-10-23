@@ -1,0 +1,53 @@
+{
+  "products": [
+    {
+      "id": "Ec1r4E1",
+      "title": "TW-E5B True Wireless Earbuds",
+      "description": "Immerse yourself in crystal-clear audio. Bluetooth 5.2, IPX5 water resistance, noise-canceling microphone, quick charge.",
+      "brands": [{"id": "mp3I", "name": "Yamaha"}],
+      "images": [
+        {"url": "https://cdn.example/raw-1", "cleaned_url": "https://cdn.example/clean-1", "is_main_image": true, "shot_type": "hero"},
+        {"url": "https://cdn.example/raw-2", "cleaned_url": null, "is_main_image": false, "shot_type": "lifestyle"}
+      ],
+      "category": {"slug": "in-ear-headphones", "title": "In-Ear Headphones"},
+      "key_features": ["Bluetooth 5.2", "IPX5 water resistance"],
+      "offers": [
+        {"url": "https://buy.example/Ec1r4E1", "domain": "adorama.com",
+         "price": {"price": 149.95, "compare_at_price": null, "currency": "USD"},
+         "availability": "InStock", "condition": "new", "max_commission_rate": 0.025}
+      ],
+      "ratings": {"value": 4.0, "count": 38, "source_count": 1}
+    },
+    {
+      "id": "HO9PMjS",
+      "title": "True Wireless Earbuds ANC",
+      "description": "Hybrid noise cancelling with dual-mic precision, LDAC support, up to 44 hours of playback.",
+      "brands": [{"id": "s08C", "name": "JVC"}],
+      "images": [{"url": "https://cdn.example/raw-3", "cleaned_url": null, "is_main_image": true, "shot_type": "hero"}],
+      "category": {"slug": "in-ear-headphones", "title": "In-Ear Headphones"},
+      "key_features": ["Hybrid Noise Cancelling", "Wireless charging"],
+      "offers": [
+        {"url": "https://buy.example/HO9PMjS", "domain": "electronics.woot.com",
+         "price": {"price": 79.99, "compare_at_price": null, "currency": "USD"},
+         "availability": "InStock", "condition": "new", "max_commission_rate": 0.091}
+      ],
+      "ratings": null
+    },
+    {
+      "id": "i7kHkPS",
+      "title": "Fit Pro True Wireless Earbuds",
+      "description": "Secure-fit wingtip design with active noise cancellation.",
+      "brands": [{"id": "ainn", "name": "Beats"}],
+      "images": [],
+      "category": {"slug": "in-ear-headphones", "title": "In-Ear Headphones"},
+      "key_features": [],
+      "offers": [
+        {"url": "https://buy.example/i7kHkPS", "domain": "macys.com",
+         "price": {"price": 152.49, "compare_at_price": null, "currency": "USD"},
+         "availability": "InStock", "condition": "new", "max_commission_rate": 0.056}
+      ],
+      "ratings": {"value": 3.6, "count": 63, "source_count": 1}
+    }
+  ],
+  "next_page_token": "abc"
+}

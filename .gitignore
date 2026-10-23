@@ -1,0 +1,29 @@
+# Secrets: never commit these
+.env
+.env.*
+!.env.example
+*.secret
+body.json
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# App data
+data/*.db
+data/*.sqlite*
+*.db
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets
+.streamlit/secrets.toml

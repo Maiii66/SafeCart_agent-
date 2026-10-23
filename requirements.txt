@@ -1,0 +1,4 @@
+# Core (grows as features are added: FastAPI, Streamlit and the Gemini SDK come next)
+requests>=2.31
+python-dotenv>=1.0
+pytest>=8.0
