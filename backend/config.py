@@ -71,6 +71,20 @@ STEP_UP_THRESHOLD_CENTS = _cents("STEP_UP_THRESHOLD", 25)
 DAILY_CAP_CENTS = _cents("DAILY_CAP", 100)
 MAX_ORDERS_PER_HOUR = _int("MAX_ORDERS_PER_HOUR", 3)
 
+# ---------- Trusted merchants ----------
+_default_trusted = "bestbuy.com,walmart.com,macys.com,target.com,demo-shop.example,budget-store.example"
+TRUSTED_MERCHANTS = tuple(
+    d.strip().lower() for d in _text("TRUSTED_MERCHANTS", _default_trusted).split(",") if d.strip()
+)
+
+
+def is_sandbox():
+    return PAYPAL_ENV == "sandbox"
+
+
+def signing_secret_ok():
+    return len(SIGNING_SECRET) >= 32
+
 # ---------- App ----------
 _db = Path(_text("DB_PATH", "data/safecart.db"))
 DB_PATH = _db if _db.is_absolute() else ROOT / _db

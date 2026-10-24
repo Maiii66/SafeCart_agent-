@@ -117,3 +117,9 @@ def test_bad_keys_are_explained(fake_http):
     with pytest.raises(pp.PayPalError, match="login failed"):
         pp.create_order(ITEMS, "k1")
 
+
+def test_paypal_error_issue_stored(fake_http):
+    fake_http.respond(make_handler(order_reply=FakeResponse(422, {"name": "UNPROCESSABLE_ENTITY", "message": "The requested action could not be performed, semantically incorrect, or failed business validation.", "details": [{"issue": "ORDER_NOT_APPROVED", "description": "Buyer has not approved this order."}]})))
+    with pytest.raises(pp.PayPalError) as exc:
+        pp.create_order(ITEMS, "k1")
+    assert getattr(exc.value, "issue", "") == "ORDER_NOT_APPROVED"

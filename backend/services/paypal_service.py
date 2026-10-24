@@ -19,6 +19,10 @@ _token_cache = {"value": None, "expires_at": 0.0}
 class PayPalError(Exception):
     """PayPal is switched off, unreachable, or refused a request."""
 
+    def __init__(self, message="", issue=""):
+        super().__init__(message)
+        self.issue = issue or ""
+
 
 @dataclass(frozen=True)
 class LineItem:
@@ -80,11 +84,19 @@ def _call(method, path, json=None, request_id=None):
     except requests.exceptions.RequestException as error:
         raise PayPalError(f"Could not reach PayPal: {error}") from error
     if response.status_code >= 400:
+        issue = ""
         try:
-            detail = response.json().get("message") or response.text[:200]
+            data = response.json()
+            detail = data.get("message") or response.text[:200]
+            try:
+                details = data.get("details") or []
+                if isinstance(details, list) and details:
+                    issue = details[0].get("issue") or ""
+            except Exception:
+                issue = ""
         except ValueError:
             detail = response.text[:200]
-        raise PayPalError(f"PayPal refused the request ({response.status_code}): {detail}")
+        raise PayPalError(f"PayPal refused the request ({response.status_code}): {detail}", issue=issue)
     return response.json() if response.content else {}
 
 
