@@ -1,113 +1,85 @@
 # backend/agent/step_up.py
-# Step-up rules and confirmation.
+# RULE 6: step-up approval. A bigger or riskier purchase needs a second, typed confirmation.
+#   step_up_reasons() decides WHEN it is needed. The answer is signed into the approval.
+#   confirm_step_up() checks what the person typed.
 
-import time
 from backend import config
 from backend import guardrails
-from backend import money
-from database import repository
+from backend.money import MoneyError, parse_dollars_to_cents
 from backend.agent import approvals
+from database import repository
 
 
 def normalise_domain(domain):
-    if not domain:
-        return ""
-    d = str(domain).strip().lower()
-    if d.startswith("www."):
-        d = d[4:]
-    return d
+    """'  WWW.Shop.Example ' -> 'shop.example'. Empty or missing input becomes ''."""
+    text = str(domain or "").strip().lower()
+    return text[4:] if text.startswith("www.") else text
 
 
 def is_trusted(domain):
-    d = normalise_domain(domain)
-    if not d:
+    """A merchant is trusted if it IS a trusted domain or a sub-domain of one.
+
+    'shop.bestbuy.com' is trusted. 'evilbestbuy.com' and 'bestbuy.com.evil.example' are not,
+    because a sub-domain must be separated by a dot and the trusted name must be at the END.
+    """
+    name = normalise_domain(domain)
+    if not name:
         return False
-    if d in config.TRUSTED_MERCHANTS:
-        return True
-    for td in config.TRUSTED_MERCHANTS:
-        if td and d.endswith("." + td):
-            return True
-    return False
+    return any(name == trusted or name.endswith("." + trusted) for trusted in config.TRUSTED_MERCHANTS)
 
 
-def step_up_reasons(items, total_cents, remaining_cap, flags):
+def step_up_reasons(items, total_cents, remaining_cap_cents, flags=None):
+    """Return the list of reasons this purchase needs a typed confirmation (empty = one click is enough).
+
+    items:               [{"product_id", "domain", ...}] exactly as stored in the signed approval
+    remaining_cap_cents: what is left of the daily spending cap
+    flags:               {product_id: ("suspicious_price", ...)}
+    """
     flags = flags or {}
     reasons = []
-    if int(total_cents) > int(config.STEP_UP_THRESHOLD_CENTS):
+
+    if total_cents > config.STEP_UP_THRESHOLD_CENTS:
         reasons.append("total_above_threshold")
-    # suspicious price flag on any item
-    for it in items:
-        pid = it.get("product_id") if isinstance(it, dict) else getattr(it, "product_id", None)
-        f = flags.get(pid) if flags else None
-        if f:
-            # check for suspicious_price
-            try:
-                if isinstance(f, (tuple, list, set)) and "suspicious_price" in f:
-                    if "suspicious_price" not in reasons:
-                        reasons.append("suspicious_price")
-                elif f == "suspicious_price":
-                    if "suspicious_price" not in reasons:
-                        reasons.append("suspicious_price")
-            except Exception:
-                pass
-    # any merchant not trusted
-    for it in items:
-        dom = it.get("domain") if isinstance(it, dict) else getattr(it, "domain", "")
-        if not is_trusted(dom):
-            reasons.append("untrusted_merchant")
-            break
-    # total more than half of remaining_cap
+
+    if any("suspicious_price" in flags.get(item["product_id"], ()) for item in items):
+        reasons.append("suspicious_price")
+
+    if any(not is_trusted(item.get("domain")) for item in items):
+        reasons.append("untrusted_merchant")
+
+    # "More than half of what is left of the daily cap", using whole-number maths:
+    # total > remaining / 2   is the same as   total * 2 > remaining.
+    # If nothing is left (remaining is 0), any purchase counts.
+    if total_cents * 2 > remaining_cap_cents:
+        reasons.append("over_half_remaining_cap")
+
+    return reasons
+
+
+def _matches_total(typed, total_cents):
+    """True if the typed text is a dollar amount equal to the signed total."""
     try:
-        if remaining_cap is not None and int(remaining_cap) > 0:
-            if int(total_cents) > int(remaining_cap) / 2.0:
-                reasons.append("over_half_remaining_cap")
-    except Exception:
-        pass
-    # deduplicate while preserving order of first appearance? easier to just return as built
-    # but tests just check presence - build unique preserving order
-    out = []
-    seen = set()
-    for r in reasons:
-        if r not in seen:
-            out.append(r)
-            seen.add(r)
-    return out
+        return parse_dollars_to_cents(typed) == total_cents
+    except MoneyError:
+        return False
 
 
 def confirm_step_up(approval_id, typed_text, now=None):
-    now = time.time() if now is None else now
-    res = approvals.verify_approval(approval_id, now=now)
-    if isinstance(res, tuple):
-        verdict, payload = res[0], res[1]
-    else:
-        verdict = res
-        payload = None
+    """Accept ONLY the word CONFIRM or the exact total from the signed approval.
+
+    Returns a guardrails.Verdict. Anything else is refused and logged.
+    """
+    verdict, payload = approvals.verify_approval(approval_id, now=now)
     if not verdict.ok:
         repository.add_log("human", "step_up_refused", f"Step-up refused: {verdict.code}", approval_id)
         return verdict
-    if payload is None:
-        try:
-            row = repository.get_approval(approval_id)
-            if row:
-                payload = __import__('json').loads(row['payload'])
-        except Exception:
-            pass
-    # check typed text
-    text = str(typed_text or "").strip()
-    accepted = False
-    if text.upper() == "CONFIRM":
-        accepted = True
-    else:
-        # try to parse as amount equal to signed total
-        try:
-            parsed = money.parse_dollars_to_cents(text)
-            if payload and int(parsed) == int(payload.get("total_cents", -1)):
-                accepted = True
-        except Exception:
-            accepted = False
-    if not accepted:
-        repository.add_log("human", "step_up_refused", "Step-up confirmation rejected", approval_id)
-        return guardrails.Verdict(False, "STEP_UP_REFUSED", "Step-up confirmation failed.")
-    repository.set_step_up_confirmed(approval_id, 1)
-    repository.add_log("human", "step_up_confirmed", "Step-up confirmed", approval_id)
-    return guardrails.Verdict(True, "OK", "step_up_confirmed")
+
+    typed = str(typed_text or "").strip()
+    if typed.upper() == "CONFIRM" or _matches_total(typed, payload["total_cents"]):
+        repository.set_step_up_confirmed(approval_id, 1)
+        repository.add_log("human", "step_up_confirmed", "Step-up confirmed", approval_id)
+        return guardrails.Verdict(True, "OK", "Step-up confirmed.")
+
+    repository.add_log("human", "step_up_refused", "The typed confirmation did not match", approval_id)
+    return guardrails.Verdict(False, "STEP_UP_REFUSED",
+                              "Type the exact total or the word CONFIRM to approve this purchase.")
