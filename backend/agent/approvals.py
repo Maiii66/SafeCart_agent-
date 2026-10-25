@@ -99,23 +99,32 @@ def create_approval(candidates, budget_cents, source, flags=None, now=None):
     repository.insert_approval(approval_id, payload_str, sig, int(now), int(expires_at))
     repository.add_log("human", "approval_created", f"Created approval {approval_id} for {total_cents} cents", approval_id)
     return ApprovalResult(ok=True, code="OK", reason="created", approval_id=approval_id, payload=payload)
+
+
 def verify_approval(approval_id, now=None):
-    from backend import guardrails
+    """Check an approval. ALWAYS returns a pair: (Verdict, payload or None).
+
+    The payload is only returned when every check passed. Callers can always write
+        verdict, payload = verify_approval(approval_id)
+    and never need to guess which shape they got.
+    """
     now = time.time() if now is None else now
     row = repository.get_approval(approval_id)
     if not row:
-        return guardrails.Verdict(False, "NO_SUCH_APPROVAL", "No such approval.")
+        return guardrails.Verdict(False, "NO_SUCH_APPROVAL", "No such approval."), None
+
     stored_payload = row["payload"]
-    stored_sig = row["signature"]
+    # Recompute the signature from the stored text. Any edit to the payload breaks the match.
     expected = _sign(stored_payload)
-    if not hmac.compare_digest(expected, str(stored_sig)):
-        return guardrails.Verdict(False, "BAD_SIGNATURE", "Signature does not match.")
+    if not hmac.compare_digest(expected, str(row["signature"])):
+        return guardrails.Verdict(False, "BAD_SIGNATURE", "Signature does not match."), None
     try:
         payload = json.loads(stored_payload)
-    except Exception:
-        return guardrails.Verdict(False, "BAD_SIGNATURE", "Invalid payload.")
+    except ValueError:
+        return guardrails.Verdict(False, "BAD_SIGNATURE", "Approval payload is unreadable."), None
+
     if int(row["expires_at"]) < int(now):
-        return guardrails.Verdict(False, "EXPIRED", "Approval expired.")
+        return guardrails.Verdict(False, "EXPIRED", "Approval expired."), None
     if row["used_at"] is not None:
-        return guardrails.Verdict(False, "ALREADY_USED", "Approval already used.")
+        return guardrails.Verdict(False, "ALREADY_USED", "Approval already used."), None
     return guardrails.Verdict(True, "OK", "ok"), payload
