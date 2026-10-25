@@ -106,14 +106,25 @@ def list_orders(limit=200):
         conn.close()
 
 
-def update_order_status(order_id, new_status, captured_at=None, capture_id=None, note=None):
+def update_order_status(order_id, new_status, captured_at=None, capture_id=None, note=None,
+                        expected_status=None):
+    """Change an order's status. Returns how many rows changed (0 or 1).
+
+    Only the fields you pass are changed: leaving captured_at, capture_id or note as None
+    keeps whatever is stored. If expected_status is given, the change is made ONLY when the
+    order is still in that status, and the check and the change happen in one statement, so
+    two requests at the same moment cannot both succeed.
+    """
+    sql = ("UPDATE orders SET status = ?, captured_at = COALESCE(?, captured_at), "
+           "capture_id = COALESCE(?, capture_id), note = COALESCE(?, note) WHERE id = ?")
+    params = [new_status, captured_at, capture_id, note, order_id]
+    if expected_status is not None:
+        sql += " AND status = ?"
+        params.append(expected_status)
     connection.init_db()
     conn = connection.get_connection()
     try:
-        cur = conn.execute(
-            "UPDATE orders SET status=?, captured_at=?, capture_id=?, note=? WHERE id=?",
-            (new_status, captured_at, capture_id, note, order_id),
-        )
+        cur = conn.execute(sql, params)
         conn.commit()
         return cur.rowcount
     finally:
