@@ -95,7 +95,7 @@ class LogSchema(BaseModel):
     action: str
     detail: str
     ref: Optional[str]
-    ts: int
+    ts: str
 
 
 class LogsResponse(BaseModel):
