@@ -1,7 +1,7 @@
 # backend/main.py
 from fastapi import FastAPI
 
-from backend.api import health, shop, approvals, checkout, orders, logs
+from backend.api import health, shop, approvals, checkout, orders, logs, status
 
 app = FastAPI(title="SafeCart API", version="1.0.0")
 
@@ -11,6 +11,7 @@ app.include_router(approvals.router)
 app.include_router(checkout.router)
 app.include_router(orders.router)
 app.include_router(logs.router)
+app.include_router(status.router)
 
 
 @app.get("/")

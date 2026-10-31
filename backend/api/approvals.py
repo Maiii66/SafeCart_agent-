@@ -1,75 +1,74 @@
 # backend/api/approvals.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-from backend.api.schemas import ApprovalRequest, ApprovalResponse
-from backend.agent import approvals
-from backend.models import Candidate, Product, Offer
+from backend.api.schemas import (
+    ApprovalRequest,
+    ApprovalResponse,
+    StepUpRequest,
+    VerdictResponse,
+)
+from backend.agent import approvals, risk_flags, step_up
+from backend.models import Candidate
 from backend.services import catalog, catalog_demo
 
 router = APIRouter()
 
 
-def _resolve_candidate(product_id: str, source: str, preferred_domain: str = None) -> Candidate:
-    # Try to resolve from the appropriate source
-    if source == "demo" or source not in ("channel3",):
-        product = catalog_demo.get_product(product_id)
-        if not product:
-            # Fallback to catalog lookup
-            try:
-                product = catalog.get_live_product(product_id, source) if source else catalog_demo.get_product(product_id)
-            except Exception:
-                product = None
-        if not product:
-            raise ValueError(f"Product {product_id} not found")
-        # Pick offer - prefer matching domain if specified
-        offer = None
-        if preferred_domain:
-            for o in product.offers:
-                if o.domain == preferred_domain:
-                    offer = o
-                    break
-        if offer is None and product.offers:
-            offer = product.offers[0]
-        if offer is None:
-            raise ValueError(f"No offer for product {product_id}")
-        return Candidate(product=product, offer=offer)
-    else:
-        # channel3 - try to get product via catalog
+def _find_product(product_id, source):
+    if source == "channel3":
         try:
-            product = catalog.get_live_product(product_id, source)
-        except Exception:
-            raise ValueError(f"Product {product_id} not found from {source}")
-        if not product:
-            raise ValueError(f"Product {product_id} not found")
-        offer = None
-        if preferred_domain:
-            for o in product.offers:
-                if o.domain == preferred_domain:
-                    offer = o
-                    break
-        if offer is None and product.offers:
-            offer = product.offers[0]
+            return catalog.get_live_product(product_id, source)
+        except catalog.LivePriceUnavailable:
+            return None
+    return catalog_demo.get_product(product_id)
+
+
+def _resolve_candidate(candidate, source):
+    product = _find_product(candidate.product_id, source)
+    if product is None:
+        raise ValueError(f"Product {candidate.product_id} not found from {source}")
+
+    offer = None
+    if candidate.domain:
+        for found in product.offers:
+            if found.domain == candidate.domain:
+                offer = found
+                break
         if offer is None:
-            raise ValueError(f"No offer for product {product_id}")
-        return Candidate(product=product, offer=offer)
+            raise ValueError(
+                f"Product {candidate.product_id} has no offer from {candidate.domain}"
+            )
+    elif product.offers:
+        offer = product.offers[0]
+
+    if offer is None:
+        raise ValueError(f"No offer for product {candidate.product_id}")
+    return Candidate(product=product, offer=offer)
 
 
 @router.post("/api/approvals", response_model=ApprovalResponse)
 def create_approval(req: ApprovalRequest):
     try:
-        candidates = []
-        for c in req.candidates:
-            cand = _resolve_candidate(c.product_id, req.source, c.domain)
-            candidates.append(cand)
-        res = approvals.create_approval(candidates, req.budget_cents, req.source, flags=req.flags)
-        return ApprovalResponse(
-            ok=res.ok,
-            code=res.code,
-            reason=res.reason,
-            approval_id=res.approval_id if res.approval_id else None,
-            payload=res.payload,
-        )
-    except ValueError as e:
-        return ApprovalResponse(ok=False, code="BAD_REQUEST", reason=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to create approval")
+        candidates = [_resolve_candidate(candidate, req.source) for candidate in req.candidates]
+    except ValueError as error:
+        return ApprovalResponse(ok=False, code="BAD_REQUEST", reason=str(error))
+
+    flags = risk_flags.compute_flags(candidates, req.source)
+    res = approvals.create_approval(
+        candidates, req.budget_cents, req.source, flags=flags
+    )
+    return ApprovalResponse(
+        ok=res.ok,
+        code=res.code,
+        reason=res.reason,
+        approval_id=res.approval_id if res.approval_id else None,
+        payload=res.payload,
+    )
+
+
+@router.post(
+    "/api/approvals/{approval_id}/step-up", response_model=VerdictResponse
+)
+def confirm_step_up(approval_id: str, req: StepUpRequest):
+    verdict = step_up.confirm_step_up(approval_id, req.typed_text)
+    return VerdictResponse(ok=verdict.ok, code=verdict.code, reason=verdict.reason)
