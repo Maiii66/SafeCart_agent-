@@ -20,7 +20,7 @@ This README describes the finished product. The Project status table below says 
 | Feature | Status |
 |---|---|
 | Channel3 product search | Done. Mock-tested. Live check: `python -m scripts.smoke_channel3` |
-| PayPal Orders v2 sandbox checkout | Done. Mock-tested. Live checks: `python -m scripts.smoke_paypal` and `python -m scripts.try_checkout` |
+| PayPal Orders v2 sandbox checkout | Done. Mock-tested. Live check: `python -m scripts.try_checkout` |
 | Demo catalog and Channel3 fallback | Done, tested |
 | Rule 1: Spending limit | Done, tested |
 | Rule 2: Only checkout.py can start a payment | Done, tested (architecture test). The Approve button arrives with the screens. |
@@ -32,11 +32,11 @@ This README describes the finished product. The Project status table below says 
 | Gemini: request understanding and explanations | Planned |
 | Smart basket (knapsack) | Planned |
 | Voice assistant | Planned |
-| API (FastAPI) | Draft. Runs in demo mode, not yet tested or hardened |
+| API (FastAPI) | Done. Tested; every `/api` route requires `X-API-Key` |
 | Streamlit screens | Planned |
 | Render deployment | Planned |
 
-**Right now** you can run the tests, the 15-scenario attack check, and the live checks. The FastAPI API is a draft, and the Streamlit screens are not built yet.
+**Right now** you can run the tests, the 15-scenario attack check, the FastAPI API, and the live checkout check. The Streamlit screens are not built yet.
 
 ---
 
@@ -149,7 +149,7 @@ Real output: `All 15 scenarios behaved exactly as expected.` (exit code 0).
 | 14 | Right typed confirmation (39.99) | ACCEPTED | 1 |
 | 15 | Unknown merchant (evilbestbuy.com) | REFUSED (STEP_UP_REQUIRED) | 0 |
 
-The architecture test in `tests/test_architecture.py` reads the source with Python's `ast` module and proves that only `backend/agent/checkout.py` calls `paypal_service.create_order` or `paypal_service.capture_order`, and that only `checkout.py` imports `paypal_service`. The full suite currently passes **307 tests**.
+The architecture test in `tests/test_architecture.py` reads the source with Python's `ast` module and proves that only `backend/agent/checkout.py` calls `paypal_service.create_order` or `paypal_service.capture_order`, and that only `checkout.py` imports `paypal_service`. The full suite passed **428 tests at the time of writing**.
 
 ---
 
@@ -179,7 +179,7 @@ The knapsack is planned to be verified in tests against a brute-force solver on 
 | Part | Technology |
 |---|---|
 | Language | Python 3.11+ |
-| Backend | FastAPI (draft) |
+| Backend | FastAPI |
 | Frontend | Streamlit (planned) |
 | Database | SQLite |
 | AI | Google Gemini (`google-genai`) (planned) |
@@ -201,12 +201,13 @@ Tests and `python -m scripts.try_attacks` need no keys and no network. The live 
 | Item | Needed for | Where to get it |
 |---|---|---|
 | Channel3 API key | `smoke_channel3` | Channel3 developer dashboard (docs.trychannel3.com) |
-| PayPal sandbox Client ID and Secret | `smoke_paypal`, `try_checkout` | developer.paypal.com, Apps & Credentials, Sandbox |
-| PayPal sandbox buyer account (email and password) | Manual approval in `smoke_paypal` and `try_checkout` | developer.paypal.com, Sandbox Accounts |
+| PayPal sandbox Client ID and Secret | `try_checkout` | developer.paypal.com, Apps & Credentials, Sandbox |
+| PayPal sandbox buyer account (email and password) | Manual approval in `try_checkout` | developer.paypal.com, Sandbox Accounts |
+| API key (32+ characters) | Every `/api` route when running the API | Generate it yourself (see below) |
 | Signing secret | `try_checkout` | Generate it yourself (see below) |
 | Gemini API key | Planned AI features; not used today | Google AI Studio |
 
-Generate a signing secret:
+Generate an API key or signing secret:
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
@@ -239,11 +240,10 @@ copy .env.example .env
 python -m pytest -q
 python -m scripts.try_attacks
 python -m scripts.smoke_channel3
-python -m scripts.smoke_paypal
 python -m scripts.try_checkout
 ```
 
-`smoke_channel3` needs a Channel3 key. `smoke_paypal` and `try_checkout` need PayPal sandbox credentials and a manual sandbox-buyer approval in the browser; `try_checkout` also needs `SIGNING_SECRET`.
+`smoke_channel3` needs a Channel3 key. `try_checkout` needs PayPal sandbox credentials and a manual sandbox-buyer approval in the browser; it also needs `SIGNING_SECRET`.
 
 ### Coming next
 
@@ -251,7 +251,6 @@ These commands are not runnable yet:
 
 ```bash
 python -m database.seed           # planned demo data (database/seed.py does not exist)
-uvicorn backend.main:app --reload # draft API; FastAPI is not in requirements.txt yet
 streamlit run frontend/app.py     # planned screens (frontend/ does not exist)
 ```
 
@@ -288,6 +287,9 @@ STEP_UP_THRESHOLD=25
 DAILY_CAP=100
 MAX_ORDERS_PER_HOUR=3
 
+# ---------- API access ----------
+API_KEY=                    # python -c "import secrets; print(secrets.token_hex(32))"
+
 # ---------- App ----------
 DB_PATH=data/safecart.db
 BACKEND_URL=http://127.0.0.1:8000
@@ -296,6 +298,42 @@ TRUSTED_MERCHANTS=bestbuy.com,walmart.com,macys.com,target.com,demo-shop.example
 ```
 
 Tests and `try_attacks` work without keys or network. The demo catalog and Channel3 fallback are built and tested. Gemini is planned, so no Gemini key is needed today.
+
+---
+
+## API
+
+Run the API locally:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+Everything under `/api` requires the key from `.env` in the `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/status
+```
+
+- A missing or wrong key returns **401**.
+- If the server key is missing or shorter than 32 characters, every `/api` route returns **503** (fail closed).
+- `/` and `/health` stay open.
+- Unexpected errors return `{"detail": "Internal error", "error_id": "..."}`. The traceback is logged on the server, never shown to the caller.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/shop` | Search the catalog within an optional maximum price |
+| POST | `/api/approvals` | Create a signed, one-time approval for chosen candidates |
+| POST | `/api/approvals/{approval_id}/step-up` | Record the typed step-up confirmation |
+| POST | `/api/checkout` | Execute an approval and create a PayPal sandbox order |
+| GET | `/api/orders` | List recent orders |
+| GET | `/api/orders/{order_id}` | Read one order |
+| POST | `/api/orders/{order_id}/complete` | Complete an order |
+| POST | `/api/orders/{order_id}/cancel` | Cancel an order |
+| GET | `/api/logs` | Read the action log |
+| GET | `/api/status` | Read limits, pause state and configuration flags |
+| POST | `/api/pause` | Pause all spending |
+| POST | `/api/resume` | Resume spending |
 
 ---
 
@@ -336,16 +374,19 @@ SafeCart/
 │   │   ├── checkout.py
 │   │   ├── limits.py
 │   │   ├── orders.py
+│   │   ├── risk_flags.py
 │   │   └── step_up.py
 │   ├── api/
 │   │   ├── __init__.py
 │   │   ├── approvals.py
+│   │   ├── auth.py
 │   │   ├── checkout.py
 │   │   ├── health.py
 │   │   ├── logs.py
 │   │   ├── orders.py
 │   │   ├── schemas.py
 │   │   ├── shop.py
+│   │   ├── status.py
 │   │   └── utils.py
 │   └── services/
 │       ├── __init__.py
@@ -363,7 +404,6 @@ SafeCart/
 ├── scripts/
 │   ├── __init__.py
 │   ├── smoke_channel3.py
-│   ├── smoke_paypal.py
 │   ├── try_attacks.py
 │   └── try_checkout.py
 └── tests/
@@ -371,6 +411,8 @@ SafeCart/
     ├── conftest.py
     ├── fixtures/
     │   └── channel3_search_sample.json
+    ├── test_api.py
+    ├── test_api_auth.py
     ├── test_approvals.py
     ├── test_architecture.py
     ├── test_catalog.py
@@ -409,7 +451,7 @@ database/seed.py             # demo data seed script
 python -m pytest -q
 ```
 
-**307 passed.**
+**428 passed at the time of writing.**
 
 What the tests cover:
 
@@ -422,6 +464,9 @@ What the tests cover:
 - The attack script itself and all 15 scenarios
 - Channel3 and PayPal parsing with a mocked network
 - Budget guardrails, the demo catalog/fallback, money parsing, and database logging
+- API authentication: every `/api` route needs `X-API-Key`, wrong keys get 401, a bad server key fails closed with 503, and `/health` and `/` stay open
+- Honest API errors: unexpected failures hide details behind a logged `error_id`, and Channel3 outages return 502
+- Malformed PayPal error bodies are parsed without crashing
 
 ---
 
@@ -431,7 +476,7 @@ What the tests cover:
 - **Shipping and tax are not modelled.** The budget covers the product price only.
 - **Affiliate links and simulated checkout.** Channel3 returns real merchant listings (affiliate links). The PayPal checkout simulates the payment and does not buy from the retailer.
 - **Step-up is an application-level flag.** The typed confirmation is stored in the database, so it protects against app mistakes, not against someone who can edit the database.
-- **Draft API has no authentication.** The FastAPI routes are a demo-only draft and are not hardened.
+- **Single shared API key.** The API uses one `X-API-Key` from `.env`, not per-user accounts. It prevents anonymous calls; it is not a full identity system.
 - **Injection guard and AI parts are not built yet.** Rule 3, the request parser, ranking, explanations, smart basket and voice are planned.
 - **Currency.** The sandbox runs in USD.
 
