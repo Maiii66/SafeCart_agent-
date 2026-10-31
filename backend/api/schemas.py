@@ -1,15 +1,20 @@
 # backend/api/schemas.py
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class HealthResponse(BaseModel):
     status: str = "ok"
 
 
-class ShopRequest(BaseModel):
-    query: str
-    max_price_cents: Optional[int] = None
+class ShopRequest(StrictRequest):
+    query: str = Field(min_length=1, max_length=200)
+    max_price_cents: Optional[int] = Field(default=None, ge=0, le=10_000_000)
     limit: int = Field(default=10, ge=1, le=50)
 
 
@@ -41,16 +46,15 @@ class ShopResponse(BaseModel):
     note: str = ""
 
 
-class CandidateRequest(BaseModel):
-    product_id: str
-    domain: Optional[str] = None
+class CandidateRequest(StrictRequest):
+    product_id: str = Field(min_length=1, max_length=200)
+    domain: Optional[str] = Field(default=None, max_length=255)
 
 
-class ApprovalRequest(BaseModel):
+class ApprovalRequest(StrictRequest):
     candidates: List[CandidateRequest]
     budget_cents: int
-    source: str = "demo"
-    flags: Optional[Dict[str, Any]] = None
+    source: Literal["demo", "channel3"] = "demo"
 
 
 class ApprovalResponse(BaseModel):
@@ -58,11 +62,21 @@ class ApprovalResponse(BaseModel):
     code: str
     reason: str
     approval_id: Optional[str] = None
-    payload: Optional[Dict[str, Any]] = None
+    payload: Optional[dict] = None
 
 
-class CheckoutRequest(BaseModel):
-    approval_id: str
+class StepUpRequest(StrictRequest):
+    typed_text: str = Field(min_length=1, max_length=40)
+
+
+class VerdictResponse(BaseModel):
+    ok: bool
+    code: str
+    reason: str = ""
+
+
+class CheckoutRequest(StrictRequest):
+    approval_id: str = Field(min_length=1, max_length=200)
 
 
 class CheckoutResponse(BaseModel):
@@ -75,7 +89,6 @@ class CheckoutResponse(BaseModel):
 
 class OrderSchema(BaseModel):
     id: int
-    approval_id: str
     paypal_order_id: Optional[str]
     status: str
     total_cents: int
@@ -100,3 +113,19 @@ class LogSchema(BaseModel):
 
 class LogsResponse(BaseModel):
     logs: List[LogSchema]
+
+
+class StatusResponse(BaseModel):
+    paused: bool
+    sandbox: bool
+    paypal_env: str
+    paypal_enabled: bool
+    channel3_enabled: bool
+    gemini_enabled: bool
+    currency: str
+    max_budget_cents: int
+    daily_cap_cents: int
+    spent_last_24h_cents: int
+    remaining_daily_cap_cents: int
+    max_orders_per_hour: int
+    step_up_threshold_cents: int
