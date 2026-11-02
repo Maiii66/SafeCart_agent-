@@ -85,13 +85,22 @@ def is_sandbox():
 def signing_secret_ok():
     return len(SIGNING_SECRET) >= 32
 
+# ---------- API access ----------
+# Every /api route requires this key in the X-API-Key header.
+API_KEY = _text("API_KEY")
+
+
+def api_key_ok():
+    return len(API_KEY) >= 32
+
+
 # ---------- App ----------
 _db = Path(_text("DB_PATH", "data/safecart.db"))
 DB_PATH = _db if _db.is_absolute() else ROOT / _db
 BACKEND_URL = _text("BACKEND_URL", "http://127.0.0.1:8000")
 
 
-# Read at call time (not import time) so tests and a changed .env behave predictably.
+# These helpers read the values above at call time, so tests and a changed .env behave predictably.
 def channel3_enabled():
     return bool(CHANNEL3_API_KEY)
 

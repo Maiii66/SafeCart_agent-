@@ -123,3 +123,33 @@ def test_paypal_error_issue_stored(fake_http):
     with pytest.raises(pp.PayPalError) as exc:
         pp.create_order(ITEMS, "k1")
     assert getattr(exc.value, "issue", "") == "ORDER_NOT_APPROVED"
+
+
+@pytest.mark.parametrize(
+    "reply,expected_issue",
+    [
+        (
+            FakeResponse(
+                422,
+                {"message": "Unprocessable", "details": [{"issue": "ORDER_NOT_APPROVED"}]},
+            ),
+            "ORDER_NOT_APPROVED",
+        ),
+        (FakeResponse(422, {"message": "Only a message"}), ""),
+        (FakeResponse(422, {"message": "Bad", "details": "not-a-list"}), ""),
+        (FakeResponse(422, {"message": "Bad", "details": []}), ""),
+        (FakeResponse(422, {"message": "Bad", "details": ["not-a-dict"]}), ""),
+        (FakeResponse(422, {"message": "Bad", "details": [{"issue": None}]}), ""),
+        (FakeResponse(422, ["a", "list"]), ""),
+        (FakeResponse(422, "a string"), ""),
+        (FakeResponse(422, None, text="<html>bad</html>"), ""),
+    ],
+)
+def test_paypal_error_bodies_are_parsed_cleanly(fake_http, reply, expected_issue):
+    fake_http.respond(make_handler(order_reply=reply))
+    with pytest.raises(pp.PayPalError) as exc:
+        pp.create_order(ITEMS, "k1")
+    assert "422" in str(exc.value)
+    assert exc.value.issue == expected_issue
+    assert "login failed" not in str(exc.value)
+    assert fake_http.calls[0]["url"].endswith("/v1/oauth2/token")

@@ -25,7 +25,7 @@ def product_to_dict(p: Product) -> Dict[str, Any]:
         "category": p.category,
         "rating_value": p.rating_value,
         "rating_count": p.rating_count,
-        "key_features": list(p.key_features) if hasattr(p.key_features, "__iter__") and not isinstance(p.key_features, str) else list(p.key_features),
+        "key_features": list(p.key_features),
         "offers": [offer_to_dict(o) for o in p.offers],
     }
 

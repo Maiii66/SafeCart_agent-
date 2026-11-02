@@ -11,6 +11,7 @@ from tests.conftest import FakeResponse
 BUD = "demo-bud-04"
 STEP_UP_BUD = "demo-bud-01"
 CHARGER = "demo-chg-01"
+API_KEY = "k" * 40
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +19,7 @@ def api_env(monkeypatch, tmp_path, safe_defaults):
     monkeypatch.setattr(connection, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config, "USE_DEMO_CATALOG", True)
     monkeypatch.setattr(config, "SIGNING_SECRET", "a" * 64)
+    monkeypatch.setattr(config, "API_KEY", API_KEY)
     monkeypatch.setattr(config, "PAYPAL_ENV", "sandbox")
     monkeypatch.setattr(config, "STEP_UP_THRESHOLD_CENTS", 2500)
     monkeypatch.setattr(config, "DAILY_CAP_CENTS", 10000)
@@ -33,7 +35,7 @@ def api_env(monkeypatch, tmp_path, safe_defaults):
 
 @pytest.fixture
 def client(api_env):
-    return TestClient(app)
+    return TestClient(app, headers={"X-API-Key": API_KEY})
 
 
 class FakePayPal:

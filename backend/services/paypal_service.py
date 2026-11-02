@@ -73,6 +73,22 @@ def _get_token():
     return _token_cache["value"]
 
 
+def _error_details(response):
+    """Return (message, issue) from a failed response, whatever shape its body has."""
+    try:
+        data = response.json()
+    except ValueError:
+        return response.text[:200], ""
+    if not isinstance(data, dict):
+        return response.text[:200], ""
+    detail = data.get("message") or response.text[:200]
+    issue = ""
+    details = data.get("details")
+    if isinstance(details, list) and details and isinstance(details[0], dict):
+        issue = details[0].get("issue") or ""
+    return detail, issue
+
+
 def _call(method, path, json=None, request_id=None):
     headers = {"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"}
     if request_id:
@@ -84,18 +100,7 @@ def _call(method, path, json=None, request_id=None):
     except requests.exceptions.RequestException as error:
         raise PayPalError(f"Could not reach PayPal: {error}") from error
     if response.status_code >= 400:
-        issue = ""
-        try:
-            data = response.json()
-            detail = data.get("message") or response.text[:200]
-            try:
-                details = data.get("details") or []
-                if isinstance(details, list) and details:
-                    issue = details[0].get("issue") or ""
-            except Exception:
-                issue = ""
-        except ValueError:
-            detail = response.text[:200]
+        detail, issue = _error_details(response)
         raise PayPalError(f"PayPal refused the request ({response.status_code}): {detail}", issue=issue)
     return response.json() if response.content else {}
 
@@ -181,9 +186,3 @@ def capture_order(order_id, idempotency_key):
         pass
     return CaptureResult(order_id=str(data.get("id", order_id)), status=str(data.get("status", "")),
                          capture_id=capture_id, amount_cents=amount_cents)
-
-
-def get_order(order_id):
-    if not re.match(r"^[A-Za-z0-9_-]{5,64}$", str(order_id)):
-        raise PayPalError("That is not a valid PayPal order id.")
-    return _call("GET", f"/v2/checkout/orders/{order_id}")

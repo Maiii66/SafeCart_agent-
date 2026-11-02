@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.api.schemas import ShopRequest, ShopResponse
 from backend.api import utils
-from backend.services import catalog
+from backend.services import catalog, channel3_service
 
 router = APIRouter()
 
@@ -13,5 +13,5 @@ def shop(req: ShopRequest):
     try:
         result = catalog.search_products(req.query, max_price_cents=req.max_price_cents, limit=req.limit)
         return ShopResponse(products=utils.products_to_list(result.products), source=result.source, note=result.note)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Shop search failed")
+    except channel3_service.Channel3Error:
+        raise HTTPException(status_code=502, detail="Product search is unavailable right now.")

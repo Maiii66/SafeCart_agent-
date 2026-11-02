@@ -8,7 +8,7 @@
 from dataclasses import dataclass
 
 from backend import config
-from backend.models import Candidate, Offer, Product
+from backend.models import Candidate
 from backend.money import format_usd
 
 
