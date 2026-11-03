@@ -40,10 +40,37 @@ class ProductSchema(BaseModel):
     offers: List[OfferSchema]
 
 
+class RankingSchema(BaseModel):
+    score: float
+    breakdown: dict
+    flags: List[str]
+    offer: OfferSchema
+
+
+class RankedProductSchema(ProductSchema):
+    ranking: RankingSchema
+
+
+class BlockedSchema(BaseModel):
+    id: str
+    title: str
+    reasons: List[str]
+
+
+class RejectedSchema(BaseModel):
+    id: str
+    title: str
+    code: str
+    reason: str
+
+
 class ShopResponse(BaseModel):
-    products: List[ProductSchema]
+    products: List[RankedProductSchema]
     source: str
     note: str = ""
+    blocked: List[BlockedSchema] = []
+    rejected: List[RejectedSchema] = []
+    duplicates: int = 0
 
 
 class CandidateRequest(StrictRequest):

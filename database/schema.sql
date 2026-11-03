@@ -35,3 +35,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Cached risk flags from the most recent search, per product and source.
+CREATE TABLE IF NOT EXISTS product_flags (
+    product_id TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    flags      TEXT NOT NULL,   -- a JSON list, e.g. ["suspicious_price"]
+    seen_at    INTEGER NOT NULL,
+    PRIMARY KEY (product_id, source)
+);

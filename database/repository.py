@@ -1,6 +1,8 @@
 # database/repository.py
 # The only file that writes SQL. Always uses ? placeholders, never string-building.
 
+import json
+
 from database import connection
 
 
@@ -177,5 +179,36 @@ def set_setting(key, value):
     try:
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def save_product_flags(product_id, source, flags, seen_at):
+    """Store the latest flag list for one product from one source."""
+    connection.init_db()
+    conn = connection.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO product_flags (product_id, source, flags, seen_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(product_id, source) DO UPDATE SET flags=excluded.flags, seen_at=excluded.seen_at",
+            (product_id, source, json.dumps(list(flags)), seen_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_product_flags(product_id, source, since):
+    """The saved list when it is fresh enough, otherwise None."""
+    connection.init_db()
+    conn = connection.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT flags FROM product_flags WHERE product_id = ? AND source = ? AND seen_at >= ?",
+            (product_id, source, since),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["flags"])
     finally:
         conn.close()
