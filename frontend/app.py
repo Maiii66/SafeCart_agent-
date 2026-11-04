@@ -7,7 +7,6 @@ import wave
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +15,9 @@ if str(ROOT) not in sys.path:
 
 from backend import config
 from backend.agent import parser, voice
-from backend.money import format_usd
+from backend.money import MoneyError, format_usd, parse_dollars_to_cents
+from frontend import checkout_flow as flow
+from frontend import client as api_client
 
 st.set_page_config(
     page_title="SafeCart",
@@ -28,7 +29,16 @@ st.set_page_config(
 DEMO_QUERY = "find me wireless earbuds under fifty dollars"
 DEMO_ITEM = "earbuds"
 DEMO_BUDGET_CENTS = 5000
-API_TIMEOUT_SECONDS = 10
+RESET_APPROVAL_CODES = {
+    "ALREADY_USED",
+    "BAD_PAYLOAD",
+    "BAD_SIGNATURE",
+    "EXPIRED",
+    "NO_SUCH_APPROVAL",
+    "OVER_BUDGET",
+    "PAYPAL_FAILED",
+    "PRICE_CHANGED",
+}
 
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap');
@@ -443,41 +453,8 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 
 
-def _headers() -> dict:
-    return {"X-API-Key": config.API_KEY, "Content-Type": "application/json"}
-
-
 def _api(method: str, path: str, payload: dict | None = None):
-    base = config.BACKEND_URL.rstrip("/")
-    try:
-        response = requests.request(
-            method,
-            f"{base}{path}",
-            headers=_headers(),
-            json=payload,
-            timeout=API_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException:
-        return None, (
-            "Cannot reach the SafeCart backend. Start it with: "
-            "uvicorn backend.main:app --reload"
-        )
-
-    if response.status_code == 401:
-        return None, "The backend rejected the API key. Check the server configuration."
-    if response.status_code == 503:
-        return None, "The backend API key is not configured on the server."
-
-    try:
-        data = response.json()
-    except ValueError:
-        data = None
-
-    if response.status_code >= 400:
-        detail = data.get("detail") if isinstance(data, dict) else None
-        return None, str(detail or f"Request failed ({response.status_code}).")
-
-    return data, ""
+    return api_client.api_request(method, path, payload)
 
 
 def _refresh_status() -> None:
@@ -512,6 +489,22 @@ def _init_state() -> None:
         "voice_mime": "audio/wav",
         "pending_search_from_voice": False,
         "checkout_status": "",
+        "checkout_error": "",
+        "checkout_order_id": None,
+        "checkout_paypal_order_id": None,
+        "checkout_order": None,
+        "checkout_approve_url": "",
+        "checkout_in_progress": False,
+        "capture_status": "",
+        "capture_in_progress": False,
+        "approval_id": "",
+        "approval_response": None,
+        "approval_fingerprint": "",
+        "step_up_confirmed": False,
+        "step_up_error": "",
+        "last_order": None,
+        "success_message": "",
+        "cart_budget_input": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -748,20 +741,72 @@ def _render_readback() -> None:
                 st.rerun()
 
 
+def _clear_approval_state() -> None:
+    st.session_state.approval_id = ""
+    st.session_state.approval_response = None
+    st.session_state.approval_fingerprint = ""
+    st.session_state.step_up_confirmed = False
+    st.session_state.step_up_error = ""
+
+
+def _clear_order_state() -> None:
+    st.session_state.checkout_order_id = None
+    st.session_state.checkout_paypal_order_id = None
+    st.session_state.checkout_order = None
+    st.session_state.checkout_approve_url = ""
+    st.session_state.checkout_status = ""
+    st.session_state.capture_status = ""
+    st.session_state.checkout_in_progress = False
+    st.session_state.capture_in_progress = False
+
+
+def _invalidate_checkout_state(clear_success: bool = False) -> None:
+    _clear_approval_state()
+    _clear_order_state()
+    st.session_state.checkout_error = ""
+    if clear_success:
+        st.session_state.last_order = None
+        st.session_state.success_message = ""
+
+
+def _safe_http_url(url) -> bool:
+    if not isinstance(url, str):
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
 def _add_to_cart(product: dict) -> None:
+    if st.session_state.get("checkout_order_id"):
+        st.session_state.notice = "Finish or cancel the current order before changing the cart."
+        return
+
     ranking = product.get("ranking") if isinstance(product.get("ranking"), dict) else {}
     offer = ranking.get("offer") if isinstance(ranking.get("offer"), dict) else {}
+    response = st.session_state.get("shop_response")
+    source = str(response.get("source") or "") if isinstance(response, dict) else ""
     product_id = str(product.get("id") or "")
     domain = str(offer.get("domain") or "")
     title = str(product.get("title") or "Untitled listing")
     price_cents = offer.get("price_cents")
     url = str(offer.get("url") or "")
+    image_url = str(product.get("image_url") or "")
+
+    if not source:
+        st.session_state.notice = "This item is missing its catalog source. Search again."
+        return
 
     for item in st.session_state.cart:
-        if item.get("product_id") == product_id and item.get("domain") == domain:
+        if item.get("product_id") == product_id:
             st.session_state.notice = "This item is already in your cart."
             return
+        if item.get("source") and item.get("source") != source:
+            st.session_state.notice = (
+                "Items from different catalog sources cannot be bought together."
+            )
+            return
 
+    _invalidate_checkout_state(clear_success=True)
     st.session_state.cart.append(
         {
             "product_id": product_id,
@@ -769,6 +814,8 @@ def _add_to_cart(product: dict) -> None:
             "domain": domain,
             "price_cents": price_cents,
             "url": url,
+            "image_url": image_url,
+            "source": source,
         }
     )
     st.session_state.notice = "Added to cart."
@@ -983,73 +1030,599 @@ def _render_voice_page() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_checkout_error() -> None:
+    message = st.session_state.get("checkout_error")
+    if message:
+        st.markdown(
+            f'<div class="sc-error">{html.escape(str(message))}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_order_details(order: dict, currency: str, heading: str) -> None:
+    order_id = order.get("id")
+    paypal_order_id = order.get("paypal_order_id")
+    status = str(order.get("status") or "UNKNOWN")
+    total_cents = order.get("total_cents")
+    created_at = flow.format_epoch(order.get("created_at"))
+    captured_at = flow.format_epoch(order.get("captured_at"))
+    capture_id = order.get("capture_id")
+
+    with st.container(border=True):
+        st.markdown(f"**{html.escape(heading)}**")
+        st.write(f"Order ID: {order_id if order_id is not None else 'unknown'}")
+        st.write(f"PayPal order ID: {paypal_order_id or 'not returned'}")
+        st.write(f"Payment status: {status}")
+        st.write(f"Total amount: {_safe_usd(total_cents)} {html.escape(str(currency or 'USD'))}")
+        st.write(f"Created: {created_at or 'not available'}")
+        st.write(f"Captured: {captured_at or 'not available'}")
+        if capture_id:
+            st.write(f"Capture ID: {capture_id}")
+
+        if status == "CREATED":
+            st.caption(
+                "The PayPal order exists, but payment is not complete. Approve it on PayPal, "
+                "then capture it below."
+            )
+        elif status == "CAPTURED":
+            st.caption("The backend confirms this payment as CAPTURED.")
+        elif status == "FAILED":
+            st.caption("The backend reports this order as FAILED. No successful payment was confirmed.")
+
+
+def _render_last_success(currency: str) -> bool:
+    message = st.session_state.get("success_message")
+    order = st.session_state.get("last_order")
+    if not message:
+        return False
+    st.markdown(
+        f'<div class="sc-notice">{html.escape(str(message))}</div>',
+        unsafe_allow_html=True,
+    )
+    if isinstance(order, dict):
+        _render_order_details(order, currency, "Confirmed order")
+    return True
+
+
+def _render_budget_input():
+    if st.session_state.get("cart_budget_input") is None:
+        pending = st.session_state.get("pending_budget_cents")
+        st.session_state.cart_budget_input = (
+            format_usd(pending)
+            if isinstance(pending, int) and not isinstance(pending, bool)
+            else ""
+        )
+
+    st.markdown("### Purchase budget")
+    budget_text = st.text_input(
+        "Maximum total for this purchase (USD)",
+        key="cart_budget_input",
+        help="The backend enforces this limit. Prices shown from search are estimates.",
+    )
+
+    budget_cents = None
+    budget_error = ""
+    if str(budget_text or "").strip():
+        try:
+            budget_cents = parse_dollars_to_cents(budget_text)
+        except MoneyError:
+            budget_error = "Enter a valid dollar amount, for example 50 or 49.99."
+            st.markdown(
+                f'<div class="sc-error">{html.escape(budget_error)}</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.caption("Enter a purchase budget before creating an approval.")
+
+    return budget_cents, budget_error
+
+
+def _render_cart_items(review: dict, locked: bool) -> None:
+    for idx, item in enumerate(review.get("items") or []):
+        price_cents = item.get("verified_price_cents")
+        price_label = "Verified approval price"
+        if price_cents is None:
+            price_cents = item.get("price_cents")
+            price_label = "Estimated search price"
+
+        title = html.escape(str(item.get("title") or "Untitled listing"))
+        domain = html.escape(str(item.get("domain") or "Unknown merchant"))
+        price = html.escape(_safe_usd(price_cents))
+        quantity = item.get("quantity") or 1
+        url = str(item.get("url") or "")
+        image_url = str(item.get("image_url") or "")
+
+        with st.container(border=True):
+            image_col, detail_col = st.columns([1.2, 4.8], vertical_alignment="center")
+            with image_col:
+                if _safe_http_url(image_url):
+                    st.image(image_url, use_container_width=True)
+                else:
+                    st.caption("No image")
+            with detail_col:
+                link_html = ""
+                if _safe_http_url(url):
+                    safe_url = html.escape(url, quote=True)
+                    link_html = (
+                        f' <a class="sc-listing-link" href="{safe_url}" '
+                        'target="_blank" rel="noopener noreferrer">View listing</a>'
+                    )
+                st.markdown(
+                    '<div class="sc-product">'
+                    '<div class="sc-product-top">'
+                    f'<span class="sc-product-domain">{domain}</span>'
+                    f'<span class="sc-product-price">{price}</span>'
+                    "</div>"
+                    f"<h3>{title}</h3>"
+                    f'<div class="sc-product-meta">Quantity: {int(quantity)} &middot; {price_label}</div>'
+                    f'<div class="sc-product-foot">{link_html}</div>'
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                if not locked and st.button(
+                    "Remove", key=f"remove_cart_{idx}", type="secondary"
+                ):
+                    st.session_state.cart.pop(idx)
+                    _invalidate_checkout_state()
+                    st.rerun()
+
+
+def _render_purchase_summary(review: dict, currency: str) -> None:
+    estimated = review.get("estimated_total_cents")
+    verified = review.get("verified_total_cents")
+    budget = review.get("budget_cents")
+    remaining = review.get("remaining_budget_cents")
+    remaining_cap = review.get("remaining_daily_cap_cents")
+
+    col_est, col_verified, col_budget, col_cap = st.columns(4)
+    col_est.metric("Estimated total", _safe_usd(estimated))
+    col_verified.metric(
+        "Verified approval total",
+        _safe_usd(verified) if verified is not None else "Not approved",
+    )
+    col_budget.metric("Purchase budget", _safe_usd(budget) if budget is not None else "Not set")
+    col_cap.metric(
+        "Remaining daily cap",
+        _safe_usd(remaining_cap) if remaining_cap is not None else "Unknown",
+    )
+
+    remaining_text = (
+        _safe_usd(remaining) if remaining is not None else "Not available"
+    )
+    st.caption(
+        f"Currency: {currency}. Remaining purchase budget: {remaining_text}. "
+        "Search prices are estimates only. The backend-verified approval amount is authoritative, "
+        "and the backend rechecks every live price again at checkout."
+    )
+
+
+def _render_approval_section(cart, budget_cents, budget_error, source) -> None:
+    approval_response = st.session_state.get("approval_response")
+    approval_payload = (
+        approval_response.get("payload")
+        if isinstance(approval_response, dict)
+        else None
+    )
+
+    if approval_response and not flow.approval_matches_cart(
+        approval_payload, cart, budget_cents, source
+    ):
+        _clear_approval_state()
+        approval_response = None
+        approval_payload = None
+        st.warning("The cart or budget changed since approval. Approve the purchase again.")
+
+    if approval_response:
+        st.success("The backend created a signed approval for this exact purchase.")
+        verified_total = (
+            approval_payload.get("total_cents")
+            if isinstance(approval_payload, dict)
+            else None
+        )
+        st.markdown(
+            f"Backend-verified checkout amount: **{html.escape(_safe_usd(verified_total))}**"
+        )
+        if st.button("Clear approval and review again", key="clear_approval", type="secondary"):
+            _clear_approval_state()
+            st.session_state.checkout_error = ""
+            st.rerun()
+        return
+
+    can_approve = (
+        bool(cart)
+        and budget_cents is not None
+        and not budget_error
+        and bool(source)
+    )
+    if st.button(
+        "Approve Purchase",
+        type="primary",
+        key="approve_purchase",
+        disabled=not can_approve,
+        use_container_width=True,
+    ):
+        candidates, candidate_source, candidate_error = flow.build_candidates(cart)
+        if candidate_error:
+            st.session_state.checkout_error = candidate_error
+        else:
+            with st.spinner("Requesting a signed backend approval..."):
+                data, error = api_client.create_approval(
+                    candidates, budget_cents, candidate_source
+                )
+            if error:
+                st.session_state.checkout_error = error
+            elif not isinstance(data, dict):
+                st.session_state.checkout_error = "The backend returned an unexpected approval response."
+            elif not data.get("ok"):
+                st.session_state.checkout_error = flow.friendly_error(
+                    data.get("code"), data.get("reason")
+                )
+            elif not data.get("approval_id"):
+                st.session_state.checkout_error = "The backend did not return an approval id."
+            else:
+                payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+                st.session_state.approval_id = data["approval_id"]
+                st.session_state.approval_response = data
+                st.session_state.approval_fingerprint = flow.approval_fingerprint(
+                    cart, budget_cents, candidate_source
+                )
+                st.session_state.step_up_confirmed = not bool(
+                    payload.get("step_up_required", True)
+                )
+                st.session_state.step_up_error = ""
+                st.session_state.checkout_error = ""
+                st.session_state.notice = "Purchase approved by the backend."
+        st.rerun()
+
+
+def _render_step_up_section(approval_response) -> None:
+    payload = approval_response.get("payload") if isinstance(approval_response, dict) else None
+    if not isinstance(payload, dict):
+        return
+
+    if not payload.get("step_up_required"):
+        st.caption("No additional typed confirmation is required for this purchase.")
+        return
+
+    if st.session_state.get("step_up_confirmed"):
+        st.success("The backend accepted the step-up confirmation.")
+        return
+
+    total_cents = payload.get("total_cents")
+    reasons = payload.get("step_up_reasons") or []
+    st.warning("Additional confirmation is required before this purchase can proceed.")
+    st.markdown(f"Exact amount requiring confirmation: **{html.escape(_safe_usd(total_cents))}**")
+    if reasons:
+        st.caption("Reasons: " + ", ".join(str(reason).replace("_", " ") for reason in reasons))
+
+    typed = st.text_input(
+        "Type CONFIRM or the exact approved total",
+        key="step_up_input",
+        max_chars=40,
+    )
+    if st.button(
+        "Confirm step-up",
+        type="primary",
+        key="submit_step_up",
+        disabled=not str(typed or "").strip(),
+    ):
+        with st.spinner("Confirming with the backend..."):
+            data, error = api_client.confirm_step_up(
+                st.session_state.get("approval_id"), str(typed or "").strip()
+            )
+        if error:
+            st.session_state.step_up_error = error
+        elif not isinstance(data, dict):
+            st.session_state.step_up_error = "The backend returned an unexpected step-up response."
+        elif not data.get("ok"):
+            st.session_state.step_up_error = flow.friendly_error(
+                data.get("code"), data.get("reason")
+            )
+        else:
+            st.session_state.step_up_confirmed = True
+            st.session_state.step_up_error = ""
+        st.rerun()
+
+    if st.session_state.get("step_up_error"):
+        st.markdown(
+            f'<div class="sc-error">{html.escape(str(st.session_state.step_up_error))}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _fetch_order(order_id):
+    data, error = api_client.get_order(order_id)
+    if isinstance(data, dict):
+        st.session_state.checkout_order = data
+        st.session_state.checkout_paypal_order_id = data.get("paypal_order_id")
+        st.session_state.checkout_status = str(data.get("status") or "")
+    return data, error
+
+
+def _mark_captured(order: dict) -> None:
+    order_id = order.get("id")
+    message = (
+        f"Payment captured successfully. The backend confirms order {order_id} as CAPTURED."
+    )
+    _clear_approval_state()
+    st.session_state.checkout_order = order
+    st.session_state.checkout_order_id = None
+    st.session_state.checkout_paypal_order_id = order.get("paypal_order_id")
+    st.session_state.checkout_approve_url = ""
+    st.session_state.checkout_status = "CAPTURED"
+    st.session_state.capture_status = "CAPTURED"
+    st.session_state.capture_in_progress = False
+    st.session_state.checkout_in_progress = False
+    st.session_state.checkout_error = ""
+    st.session_state.last_order = order
+    st.session_state.success_message = message
+    st.session_state.cart = []
+    st.session_state.cart_budget_input = None
+
+
+def _process_checkout_result(data, error) -> None:
+    if error:
+        st.session_state.checkout_status = "UNKNOWN"
+        st.session_state.checkout_error = error
+        return
+    if not isinstance(data, dict):
+        st.session_state.checkout_status = "UNKNOWN"
+        st.session_state.checkout_error = (
+            "The backend returned an unexpected checkout response. The cart was kept."
+        )
+        return
+
+    if data.get("ok"):
+        order_id = data.get("order_id")
+        st.session_state.checkout_order_id = order_id
+        st.session_state.checkout_approve_url = str(data.get("approve_url") or "")
+        st.session_state.checkout_status = "CREATED"
+        st.session_state.checkout_error = ""
+        st.session_state.capture_status = ""
+        order, fetch_error = _fetch_order(order_id)
+        if flow.is_captured_order(order):
+            _mark_captured(order)
+        elif not isinstance(order, dict):
+            st.session_state.notice = (
+                "The PayPal order was created, but its details could not be loaded. "
+                "Use Refresh order status before capture."
+            )
+        _clear_approval_state()
+        return
+
+    code = str(data.get("code") or "")
+    st.session_state.checkout_status = code or "REFUSED"
+    st.session_state.checkout_error = flow.friendly_error(code, data.get("reason"))
+    order_id = data.get("order_id")
+    if order_id:
+        st.session_state.checkout_order_id = order_id
+        order, _ = _fetch_order(order_id)
+        if flow.is_captured_order(order):
+            _mark_captured(order)
+            return
+    if code in RESET_APPROVAL_CODES:
+        _clear_approval_state()
+
+
+def _render_checkout_section(approval_response, currency: str) -> None:
+    payload = approval_response.get("payload") if isinstance(approval_response, dict) else None
+    if not isinstance(payload, dict):
+        return
+
+    step_up_ok = (
+        not payload.get("step_up_required", True)
+        or bool(st.session_state.get("step_up_confirmed"))
+    )
+    if not step_up_ok:
+        st.caption("Complete the typed step-up confirmation before checkout.")
+        return
+
+    total_cents = payload.get("total_cents")
+    st.markdown(
+        f"Backend-verified checkout amount: **{html.escape(_safe_usd(total_cents))} "
+        f"{html.escape(str(currency or 'USD'))}**"
+    )
+    can_checkout = bool(st.session_state.get("approval_id")) and not st.session_state.get(
+        "checkout_in_progress"
+    )
+    if st.button(
+        "Pay with PayPal Sandbox",
+        type="primary",
+        key="checkout_cart",
+        disabled=not can_checkout,
+        use_container_width=True,
+    ):
+        st.session_state.checkout_in_progress = True
+        try:
+            with st.spinner("Creating the PayPal sandbox order..."):
+                data, error = api_client.execute_checkout(
+                    st.session_state.get("approval_id")
+                )
+            _process_checkout_result(data, error)
+        finally:
+            st.session_state.checkout_in_progress = False
+        st.rerun()
+
+
+def _render_order_section(currency: str) -> None:
+    order_id = st.session_state.get("checkout_order_id")
+    order = st.session_state.get("checkout_order")
+
+    if not order_id:
+        if isinstance(order, dict):
+            _render_order_details(order, currency, "Order result")
+        return
+
+    st.markdown("### Checkout result")
+    if isinstance(order, dict):
+        _render_order_details(order, currency, "PayPal sandbox order")
+    else:
+        st.markdown(f"Order ID: **{html.escape(str(order_id))}**")
+        st.caption("Order details have not been loaded yet.")
+
+    approve_url = str(st.session_state.get("checkout_approve_url") or "")
+    if approve_url:
+        if flow.is_safe_paypal_sandbox_url(approve_url):
+            st.link_button("Approve on PayPal (Sandbox)", approve_url)
+        else:
+            st.warning(
+                "A PayPal approval link was returned, but it failed URL safety validation "
+                "and was not displayed."
+            )
+
+    if st.button("Refresh order status", key="refresh_order", type="secondary"):
+        refreshed, refresh_error = _fetch_order(order_id)
+        if not isinstance(refreshed, dict):
+            st.session_state.checkout_error = (
+                refresh_error
+                or "The order status could not be refreshed. The cart was kept."
+            )
+        elif flow.is_captured_order(refreshed):
+            _mark_captured(refreshed)
+        else:
+            st.session_state.checkout_error = ""
+            st.session_state.notice = (
+                f"The backend reports order {order_id} as {refreshed.get('status') or 'UNKNOWN'}."
+            )
+        st.rerun()
+
+    order_status = str(order.get("status") or "") if isinstance(order, dict) else ""
+    if order_status == "CREATED" and not st.session_state.get("capture_in_progress"):
+        if st.button(
+            "I approved — capture payment",
+            type="primary",
+            key="capture_payment",
+            use_container_width=True,
+        ):
+            st.session_state.capture_in_progress = True
+            try:
+                preflight, preflight_error = api_client.get_order(order_id)
+                if not isinstance(preflight, dict):
+                    st.session_state.capture_status = "UNKNOWN"
+                    st.session_state.checkout_error = (
+                        preflight_error
+                        or "The order status could not be verified before capture. "
+                        "The cart was kept. Use Refresh order status."
+                    )
+                else:
+                    st.session_state.checkout_order = preflight
+                    preflight_status = str(preflight.get("status") or "")
+                    if flow.is_captured_order(preflight):
+                        _mark_captured(preflight)
+                    elif preflight_status != "CREATED":
+                        st.session_state.capture_status = preflight_status or "UNKNOWN"
+                        st.session_state.checkout_error = flow.friendly_error(
+                            preflight_status,
+                            f"This order is {preflight_status or 'unknown'} and cannot be captured. "
+                            "The cart was kept.",
+                        )
+                    else:
+                        result, result_error = api_client.complete_order(order_id)
+                        final_order, final_error = api_client.get_order(order_id)
+                        if isinstance(final_order, dict):
+                            st.session_state.checkout_order = final_order
+                            final_status = str(final_order.get("status") or "")
+                            if flow.is_captured_order(final_order):
+                                _mark_captured(final_order)
+                            elif final_status == "CREATED":
+                                st.session_state.capture_status = "CREATED"
+                                if result_error:
+                                    st.session_state.checkout_error = (
+                                        "The capture result is uncertain, and the backend still "
+                                        "reports the order as CREATED. The cart was kept. Do not "
+                                        "retry automatically; use Refresh order status."
+                                    )
+                                else:
+                                    code = (
+                                        result.get("code")
+                                        if isinstance(result, dict)
+                                        else "WAITING_APPROVAL"
+                                    )
+                                    st.session_state.checkout_error = flow.friendly_error(
+                                        code or "WAITING_APPROVAL"
+                                    )
+                            else:
+                                st.session_state.capture_status = final_status or "UNKNOWN"
+                                st.session_state.checkout_error = flow.friendly_error(
+                                    final_status,
+                                    "The order did not reach CAPTURED. The cart was kept.",
+                                )
+                        else:
+                            st.session_state.capture_status = "UNKNOWN"
+                            st.session_state.checkout_error = (
+                                final_error
+                                or "The capture result could not be confirmed because the order "
+                                "status could not be fetched. The cart was kept. Do not retry "
+                                "automatically; use Refresh order status."
+                            )
+                _clear_approval_state()
+            finally:
+                st.session_state.capture_in_progress = False
+            st.rerun()
+
+    if order_status in ("FAILED", "CANCELLED"):
+        if st.button(
+            "Start a new approval for this cart",
+            key="restart_after_failed_order",
+            type="secondary",
+        ):
+            _invalidate_checkout_state()
+            st.rerun()
+
+
 def _render_cart_page() -> None:
     if st.session_state.page != "Cart":
         return
+
     st.markdown('<h1 class="sc-page-title">Cart</h1>', unsafe_allow_html=True)
+    currency = str(st.session_state.status.get("currency") or config.CURRENCY or "USD")
+    had_success = _render_last_success(currency)
+
     cart = st.session_state.cart
     if not cart:
-        st.markdown(
-            '<div class="sc-empty">Your cart is empty. Add items from the Shop tab.</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    total_cents = 0
-    for idx, item in enumerate(cart):
-        price_cents = item.get("price_cents")
-        try:
-            if isinstance(price_cents, int) and not isinstance(price_cents, bool):
-                total_cents += price_cents
-        except Exception:
-            pass
-        title = html.escape(str(item.get("title") or "Untitled listing"))
-        domain = html.escape(str(item.get("domain") or ""))
-        price = html.escape(_safe_usd(price_cents))
-        url = str(item.get("url") or "")
-        parsed_url = urlparse(url)
-        link_html = ""
-        if parsed_url.scheme in ("http", "https") and parsed_url.netloc:
-            safe_url = html.escape(url, quote=True)
-            link_html = (
-                f' <a class="sc-listing-link" href="{safe_url}" '
-                'target="_blank" rel="noopener noreferrer">View listing</a>'
-            )
-        with st.container(border=True):
+        if not had_success:
             st.markdown(
-                '<div class="sc-product">'
-                '<div class="sc-product-top">'
-                f'<span class="sc-product-domain">{domain}</span>'
-                f'<span class="sc-product-price">{price}</span>'
-                "</div>"
-                f"<h3>{title}</h3>"
-                f'<div class="sc-product-foot">{link_html}</div>'
-                "</div>",
+                '<div class="sc-empty">Your cart is empty. Add items from the Shop tab.</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("Remove", key=f"remove_cart_{idx}", type="secondary"):
-                st.session_state.cart.pop(idx)
-                st.rerun()
+        return
 
-    st.markdown(
-        f'<div style="margin-top:1.2rem; display:flex; justify-content:space-between; align-items:center; padding:1rem 1.2rem; border:1px solid #E8DEC5; border-radius:8px; background:#FFFFFF;">'
-        f'<span style="font-family:Newsreader,serif; font-size:1.4rem; color:#1B3022;">Total</span>'
-        f'<span style="font-family:Newsreader,serif; font-size:1.6rem; color:#1B3022;">{html.escape(_safe_usd(total_cents))}</span>'
-        "</div>",
-        unsafe_allow_html=True,
+    order_exists = bool(st.session_state.get("checkout_order_id"))
+    source = flow.cart_source(cart)
+
+    budget_cents = None
+    budget_error = ""
+    if not order_exists:
+        budget_cents, budget_error = _render_budget_input()
+
+    approval_response = st.session_state.get("approval_response")
+    approval_payload = (
+        approval_response.get("payload")
+        if isinstance(approval_response, dict)
+        else None
+    )
+    review = flow.purchase_review(
+        cart,
+        budget_cents,
+        st.session_state.status.get("remaining_daily_cap_cents"),
+        currency,
+        approval_payload,
     )
 
-    if st.button("Checkout (PayPal Sandbox)", type="primary", key="checkout_cart"):
-        st.session_state.checkout_status = "Simulated PayPal Sandbox checkout completed. No payment was processed."
-        st.session_state.cart = []
-        st.rerun()
+    _render_cart_items(review, locked=order_exists)
+    _render_purchase_summary(review, currency)
 
-    if st.session_state.checkout_status:
-        st.markdown(
-            f'<div class="sc-notice">{html.escape(st.session_state.checkout_status)}</div>',
-            unsafe_allow_html=True,
-        )
-        st.session_state.checkout_status = ""
+    if order_exists:
+        _render_checkout_error()
+        _render_order_section(currency)
+        return
+
+    _render_approval_section(cart, budget_cents, budget_error, source)
+    approval_response = st.session_state.get("approval_response")
+    if isinstance(approval_response, dict):
+        _render_step_up_section(approval_response)
+        _render_checkout_section(approval_response, currency)
+    _render_checkout_error()
 
 
 def _render_activity_log() -> None:
