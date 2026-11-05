@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from backend import guardrails
-from backend.agent import dedupe, injection, scoring
+from backend.agent import dedupe, injection, optimizer, scoring
 from backend.models import Candidate
 from backend.services import catalog
 from database import repository
@@ -28,6 +28,26 @@ class SearchOutcome:
     blocked: tuple
     rejected: tuple
     duplicates: tuple
+
+
+@dataclass(frozen=True)
+class BasketItemOutcome:
+    query: str
+    item: object
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class BasketOutcome:
+    source: str
+    note: str
+    items: tuple
+    optimal: object
+    greedy: object
+    comparison: object
+    total_budget_cents: int
+    total_cents: int
+    remaining_cents: int
 
 
 def _is_positive_budget(value):
@@ -95,4 +115,114 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
         blocked=tuple(blocked),
         rejected=tuple(filtered.rejected),
         duplicates=tuple(duplicates),
+    )
+
+
+def _clean_queries(items):
+    if isinstance(items, str):
+        items = [items]
+    try:
+        raw_items = list(items)
+    except TypeError:
+        raise TypeError("items must be a sequence of search strings.") from None
+
+    queries = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            raise TypeError("Each basket item must be a string.")
+        query = item.strip()
+        if not query:
+            continue
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+
+    if not queries:
+        raise ValueError("At least one basket item is required.")
+    if len(queries) > 5:
+        raise ValueError("A basket can contain at most five items.")
+    return queries
+
+
+def search_basket(items, total_budget_cents, limit=10, now=None):
+    """Search every item through the safe pipeline, then choose the best combination."""
+    budget = guardrails.validate_budget_cents(total_budget_cents)
+    if not budget.ok:
+        raise ValueError(budget.reason)
+
+    queries = _clean_queries(items)
+    now = time.time() if now is None else now
+    outcomes = [
+        search_and_rank(query, total_budget_cents, limit=limit, now=now)
+        for query in queries
+    ]
+
+    sources = {outcome.source for outcome in outcomes}
+    mixed_sources = len(sources) != 1
+    source = "" if mixed_sources else next(iter(sources))
+
+    notes = []
+    for outcome in outcomes:
+        if outcome.note and outcome.note not in notes:
+            notes.append(outcome.note)
+    if mixed_sources:
+        notes.append(
+            "Items came from different catalog sources, so they cannot be bought together."
+        )
+
+    categories = []
+    for query, outcome in zip(queries, outcomes):
+        options = [
+            optimizer.BasketCandidate(
+                item=ranked,
+                price_cents=ranked.candidate.offer.price_cents,
+                score=ranked.score,
+            )
+            for ranked in outcome.ranked
+        ]
+        categories.append((query, options))
+
+    comparison = optimizer.compare_with_greedy(categories, total_budget_cents)
+    chosen = {choice.category: choice.item for choice in comparison.optimal.chosen}
+
+    product_ids = [
+        choice.item.candidate.product.id
+        for choice in comparison.optimal.chosen
+        if getattr(getattr(choice.item, "candidate", None), "product", None) is not None
+    ]
+    if len(product_ids) != len(set(product_ids)):
+        source = ""
+        notes.append(
+            "The same product matched more than one item, so this basket cannot be bought together."
+        )
+
+    item_results = []
+    for query, outcome in zip(queries, outcomes):
+        item = chosen.get(query)
+        item_note = ""
+        if not outcome.ranked:
+            item_note = f"No safe listings matched '{query}'."
+        elif item is None and query in comparison.optimal.unfulfilled:
+            item_note = f"'{query}' did not fit the total budget."
+        item_results.append(BasketItemOutcome(query=query, item=item, note=item_note))
+
+    if not any(outcome.ranked for outcome in outcomes):
+        notes.append("No products matched that basket.")
+    elif not comparison.optimal.chosen:
+        notes.append("Nothing fits the total budget. Try fewer items or a higher budget.")
+
+    total_cents = comparison.optimal.total_price_cents
+    return BasketOutcome(
+        source=source,
+        note=" ".join(notes),
+        items=tuple(item_results),
+        optimal=comparison.optimal,
+        greedy=comparison.greedy,
+        comparison=comparison,
+        total_budget_cents=total_budget_cents,
+        total_cents=total_cents,
+        remaining_cents=max(0, total_budget_cents - total_cents),
     )

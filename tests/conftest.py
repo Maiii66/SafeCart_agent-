@@ -22,6 +22,7 @@ class FakeResponse:
 def safe_defaults(monkeypatch):
     """Every test starts with fake keys and NO network. A test that forgets to mock fails loudly."""
     monkeypatch.setattr(config, "CHANNEL3_API_KEY", "test-channel3-key")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     monkeypatch.setattr(config, "PAYPAL_CLIENT_ID", "test-id")
     monkeypatch.setattr(config, "PAYPAL_CLIENT_SECRET", "test-secret")
     monkeypatch.setattr(config, "USE_DEMO_CATALOG", False)

@@ -56,4 +56,4 @@ def test_try_guard_without_arguments_scans_the_catalog():
     code, lines = _run(try_guard, [])
     assert code == 0
     assert any("BLOCKED demo-bud-07" in line for line in lines)
-    assert any("15 products passed, 1 blocked." in line for line in lines)
+    assert any("18 products passed, 1 blocked." in line for line in lines)

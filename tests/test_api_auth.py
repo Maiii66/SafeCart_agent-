@@ -21,6 +21,7 @@ APPROVAL_BODY = {
 
 PROTECTED = [
     ("POST", "/api/shop", {"query": "earbuds"}),
+    ("POST", "/api/basket", {"items": ["earbuds"], "total_budget_cents": 5000}),
     ("POST", "/api/approvals", APPROVAL_BODY),
     ("POST", "/api/approvals/abc/step-up", {"typed_text": "CONFIRM"}),
     ("POST", "/api/checkout", {"approval_id": "abc"}),

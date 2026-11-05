@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend import config
-from backend.agent import shopper
+from backend.agent import explain, shopper
 from backend.api import utils
 from backend.api.schemas import (
     BlockedSchema,
@@ -24,6 +24,7 @@ def shop(req: ShopRequest):
     except channel3_service.Channel3Error:
         raise HTTPException(status_code=502, detail="Product search is unavailable right now.")
 
+    explanation, explanation_source = explain.explain(req.query, outcome.ranked)
     return ShopResponse(
         products=[RankedProductSchema(**utils.ranked_to_dict(item)) for item in outcome.ranked],
         source=outcome.source,
@@ -33,4 +34,6 @@ def shop(req: ShopRequest):
         rejected=[RejectedSchema(**utils.rejected_to_dict(rejection))
                   for rejection in outcome.rejected],
         duplicates=len(outcome.duplicates),
+        explanation=explanation,
+        explanation_source=explanation_source,
     )

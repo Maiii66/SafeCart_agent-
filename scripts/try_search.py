@@ -53,8 +53,9 @@ def main(argv=None, say=print):
             if budget is None:
                 budget = parsed.total_budget_cents
                 if len(parsed.items) > 1:
-                    say("(The basket optimiser is not built yet: "
-                        f"'{item.query}' is searched with the full total budget.)")
+                    say("(Showing each item separately: "
+                        f"'{item.query}' is searched with the full total budget. "
+                        "The app combines them into an optimized basket.)")
 
             outcome = shopper.search_and_rank(item.query, budget, limit=10)
             say("")

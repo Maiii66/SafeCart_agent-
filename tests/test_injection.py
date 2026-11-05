@@ -253,7 +253,7 @@ def test_demo_catalog_has_exactly_one_blocked_product():
     products = catalog_demo.all_products()
     safe, blocked = split_unsafe(products)
     assert [product.id for product, _reasons in blocked] == ["demo-bud-07"]
-    assert len(safe) == 15
+    assert len(safe) == 18
     assert len(blocked) == 1
 
 

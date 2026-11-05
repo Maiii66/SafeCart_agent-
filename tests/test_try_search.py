@@ -59,7 +59,7 @@ def test_two_items_print_two_sections_and_the_basket_note():
     text = text_of(lines)
     assert code == 0
     assert text.count("Results for") == 2
-    assert "The basket optimiser is not built yet" in text
+    assert "The app combines them into an optimized basket." in text
 
 
 def test_the_real_database_path_is_unchanged():

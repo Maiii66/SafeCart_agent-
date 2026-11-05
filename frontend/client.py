@@ -65,6 +65,14 @@ def search_products(query: str, max_price_cents, limit: int = 10):
     )
 
 
+def search_basket(items, total_budget_cents, limit: int = 10):
+    return api_request(
+        "POST",
+        "/api/basket",
+        {"items": list(items), "total_budget_cents": total_budget_cents, "limit": limit},
+    )
+
+
 def fetch_status():
     return api_request("GET", "/api/status")
 
