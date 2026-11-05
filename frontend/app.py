@@ -14,8 +14,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend import config
-from backend.agent import parser, voice
+from backend.agent import parser, understand, voice
 from backend.money import MoneyError, format_usd, parse_dollars_to_cents
+from backend.services import llm
 from frontend import checkout_flow as flow
 from frontend import client as api_client
 
@@ -478,7 +479,9 @@ def _init_state() -> None:
         "readback": None,
         "pending_query": "",
         "pending_budget_cents": None,
+        "pending_basket": None,
         "shop_response": None,
+        "basket_response": None,
         "search_error": "",
         "status": {},
         "status_error": "",
@@ -584,6 +587,79 @@ def _render_header() -> None:
                 st.rerun()
 
 
+def _basket_budget(parsed):
+    if parsed.total_budget_cents is not None:
+        return parsed.total_budget_cents
+    budgets = [item.budget_cents for item in parsed.items]
+    if budgets and all(budget is not None for budget in budgets):
+        return sum(budgets)
+    return None
+
+
+def _stage_parsed_request(parsed) -> bool:
+    """Put a parsed request into session state and return True when it can be searched."""
+    st.session_state.shop_response = None
+    st.session_state.basket_response = None
+    st.session_state.search_error = ""
+    st.session_state.page = "Shop"
+
+    if not parsed.items:
+        st.session_state.readback = {"item": None, "budget_cents": None}
+        st.session_state.pending_query = ""
+        st.session_state.pending_budget_cents = None
+        st.session_state.pending_basket = None
+        st.session_state.notice = parser.readback_text(parsed)
+        return False
+
+    if len(parsed.items) > 1:
+        budget = _basket_budget(parsed)
+        readback = parser.readback_text(parsed)
+        st.session_state.readback = {
+            "item": None,
+            "budget_cents": budget,
+            "text": readback,
+        }
+        st.session_state.pending_query = ""
+        st.session_state.pending_budget_cents = None
+
+        if budget is None:
+            st.session_state.pending_basket = None
+            st.session_state.notice = (
+                "Add one total budget, or a budget for every item, then search again."
+            )
+            return False
+        if budget > config.MAX_BUDGET_CENTS:
+            st.session_state.pending_basket = None
+            st.session_state.notice = (
+                f"The total budget is above the allowed maximum of "
+                f"{format_usd(config.MAX_BUDGET_CENTS)}."
+            )
+            return False
+
+        st.session_state.pending_basket = {
+            "items": [item.query for item in parsed.items],
+            "budget_cents": budget,
+        }
+        st.session_state.notice = "Review the read-back and confirm to search."
+        return True
+
+    item = parsed.items[0].query
+    budget = parsed.items[0].budget_cents
+    if budget is None:
+        budget = parsed.total_budget_cents
+
+    st.session_state.pending_basket = None
+    st.session_state.readback = {"item": item, "budget_cents": budget}
+    st.session_state.pending_query = item
+    st.session_state.pending_budget_cents = budget
+
+    if budget is None:
+        st.session_state.notice = "Add a maximum budget, then search again."
+        return False
+    st.session_state.notice = "Review the read-back and confirm to search."
+    return True
+
+
 def _handle_search(text: str) -> None:
     text = text.strip()
     if not text:
@@ -591,36 +667,12 @@ def _handle_search(text: str) -> None:
         return
 
     try:
-        parsed = parser.parse_request(text)
+        parsed = understand.parse_request(text)
     except parser.ParseError as error:
         st.session_state.notice = str(error)
         return
 
-    st.session_state.shop_response = None
-    st.session_state.search_error = ""
-    st.session_state.page = "Shop"
-
-    if not parsed.items:
-        message = parser.readback_text(parsed)
-        st.session_state.readback = {"item": None, "budget_cents": None}
-        st.session_state.pending_query = ""
-        st.session_state.pending_budget_cents = None
-        st.session_state.notice = message
-        return
-
-    item = parsed.items[0].query
-    budget = parsed.items[0].budget_cents
-    if budget is None:
-        budget = parsed.total_budget_cents
-
-    st.session_state.readback = {"item": item, "budget_cents": budget}
-    st.session_state.pending_query = item
-    st.session_state.pending_budget_cents = budget
-
-    if budget is None:
-        st.session_state.notice = "Add a maximum budget, then search again."
-    else:
-        st.session_state.notice = "Review the read-back and confirm to search."
+    _stage_parsed_request(parsed)
 
 
 def _run_search() -> None:
@@ -636,17 +688,39 @@ def _run_search() -> None:
     )
     if isinstance(data, dict):
         st.session_state.shop_response = data
+        st.session_state.basket_response = None
         st.session_state.search_error = ""
     else:
         st.session_state.shop_response = None
         st.session_state.search_error = error or "Product search failed."
 
 
+def _run_basket_search() -> None:
+    pending = st.session_state.get("pending_basket")
+    if not isinstance(pending, dict):
+        return
+    items = pending.get("items")
+    budget = pending.get("budget_cents")
+    if not isinstance(items, list) or not items or budget is None:
+        return
+
+    data, error = api_client.search_basket(items, budget, limit=10)
+    if isinstance(data, dict):
+        st.session_state.basket_response = data
+        st.session_state.shop_response = None
+        st.session_state.search_error = ""
+    else:
+        st.session_state.basket_response = None
+        st.session_state.search_error = error or "Basket search failed."
+
+
 def _edit_request() -> None:
     st.session_state.readback = None
     st.session_state.pending_query = ""
     st.session_state.pending_budget_cents = None
+    st.session_state.pending_basket = None
     st.session_state.shop_response = None
+    st.session_state.basket_response = None
     st.session_state.search_error = ""
     st.session_state.page = "Shop"
     st.session_state.notice = "Update your request, then press Search."
@@ -693,8 +767,11 @@ def _render_readback() -> None:
 
     item = readback.get("item")
     budget = readback.get("budget_cents")
+    text = readback.get("text")
 
-    if item and budget is not None:
+    if text:
+        body = html.escape(str(text))
+    elif item and budget is not None:
         body = (
             f"(heard: <mark>{html.escape(str(item))}</mark>, "
             f"<mark>maximum {html.escape(_safe_usd(budget))}</mark>. "
@@ -719,17 +796,26 @@ def _render_readback() -> None:
 
         confirm_col, edit_col, _ = st.columns([1.7, 1, 2.4], vertical_alignment="center")
         with confirm_col:
-            can_search = bool(st.session_state.pending_query) and (
+            pending_basket = st.session_state.get("pending_basket")
+            can_basket = (
+                isinstance(pending_basket, dict)
+                and bool(pending_basket.get("items"))
+                and pending_basket.get("budget_cents") is not None
+            )
+            can_single = bool(st.session_state.pending_query) and (
                 st.session_state.pending_budget_cents is not None
             )
             if st.button(
                 "Confirm & Search",
                 type="primary",
                 use_container_width=True,
-                disabled=not can_search,
+                disabled=not (can_basket or can_single),
                 key="confirm_search",
             ):
-                _run_search()
+                if can_basket:
+                    _run_basket_search()
+                else:
+                    _run_search()
         with edit_col:
             if st.button(
                 "Edit",
@@ -776,7 +862,7 @@ def _safe_http_url(url) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
-def _add_to_cart(product: dict) -> None:
+def _add_to_cart(product: dict, source=None) -> None:
     if st.session_state.get("checkout_order_id"):
         st.session_state.notice = "Finish or cancel the current order before changing the cart."
         return
@@ -784,7 +870,12 @@ def _add_to_cart(product: dict) -> None:
     ranking = product.get("ranking") if isinstance(product.get("ranking"), dict) else {}
     offer = ranking.get("offer") if isinstance(ranking.get("offer"), dict) else {}
     response = st.session_state.get("shop_response")
-    source = str(response.get("source") or "") if isinstance(response, dict) else ""
+    source = str(
+        source
+        if source is not None
+        else (response.get("source") if isinstance(response, dict) else "")
+        or ""
+    )
     product_id = str(product.get("id") or "")
     domain = str(offer.get("domain") or "")
     title = str(product.get("title") or "Untitled listing")
@@ -887,9 +978,144 @@ def _product_card(product: dict, show_cart_button: bool = True) -> None:
             st.rerun()
 
 
+def _render_explanation(explanation, source) -> None:
+    if not explanation:
+        return
+    label = "AI" if str(source) == "gemini" else "Rules"
+    with st.container(border=True, key="why_this_pick"):
+        st.markdown(
+            '<div class="sc-readback">'
+            f'<span class="sc-ai-label">{label}</span>'
+            f'<span class="sc-readback-text">{html.escape(str(explanation))}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _summary_products(summary) -> list:
+    chosen = summary.get("chosen") if isinstance(summary, dict) else None
+    if not isinstance(chosen, list):
+        return []
+    products = []
+    for entry in chosen:
+        product = entry.get("product") if isinstance(entry, dict) else None
+        if isinstance(product, dict):
+            products.append(product)
+    return products
+
+
+def _render_basket_results(data: dict) -> None:
+    source = str(data.get("source") or "")
+    optimal = data.get("optimal") if isinstance(data.get("optimal"), dict) else {}
+    greedy = data.get("greedy") if isinstance(data.get("greedy"), dict) else {}
+    chosen = _summary_products(optimal)
+    total_cents = optimal.get("total_price_cents")
+    budget_cents = data.get("total_budget_cents")
+
+    st.markdown(
+        '<div class="sc-results-head">'
+        "<h2>Smart basket</h2>"
+        f'<span class="sc-results-meta">{html.escape(_safe_usd(total_cents))} '
+        f'of {html.escape(_safe_usd(budget_cents))}</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    _render_explanation(data.get("explanation"), data.get("explanation_source"))
+
+    if not chosen:
+        st.markdown(
+            '<div class="sc-empty">No safe basket fits that total budget. '
+            "Try fewer items or a higher budget.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        if source:
+            if st.button(
+                "Add all basket items to cart",
+                type="primary",
+                use_container_width=True,
+                key="add_whole_basket",
+            ):
+                for product in chosen:
+                    _add_to_cart(product, source=source)
+                st.session_state.notice = (
+                    f"Added {len(chosen)} item(s) from the optimal basket."
+                )
+                st.rerun()
+        else:
+            st.warning(
+                "These items came from different catalog sources and cannot be bought together."
+            )
+
+        for index, product in enumerate(chosen):
+            with st.container(border=True):
+                _product_card(product, show_cart_button=False)
+                if source and st.button(
+                    "Add to Cart 🛒",
+                    key=f"basket_add_{index}_{product.get('id')}",
+                    type="secondary",
+                ):
+                    _add_to_cart(product, source=source)
+                    st.rerun()
+
+    with st.container(border=True):
+        st.markdown("**Greedy vs optimal**")
+        left, right = st.columns(2)
+        with left:
+            st.markdown(
+                f"**Optimal** &middot; {html.escape(_safe_usd(optimal.get('total_price_cents')))} "
+                f"&middot; score {html.escape(str(optimal.get('total_score', 0)))}"
+            )
+            for product in _summary_products(optimal):
+                offer = (product.get("ranking") or {}).get("offer") or {}
+                st.write(
+                    f"{product.get('title', 'Untitled listing')} - "
+                    f"{_safe_usd(offer.get('price_cents'))}"
+                )
+        with right:
+            st.markdown(
+                f"**Greedy** &middot; {html.escape(_safe_usd(greedy.get('total_price_cents')))} "
+                f"&middot; score {html.escape(str(greedy.get('total_score', 0)))}"
+            )
+            for product in _summary_products(greedy):
+                offer = (product.get("ranking") or {}).get("offer") or {}
+                st.write(
+                    f"{product.get('title', 'Untitled listing')} - "
+                    f"{_safe_usd(offer.get('price_cents'))}"
+                )
+        score_gain = data.get("score_gain")
+        difference = data.get("price_difference_cents")
+        if isinstance(score_gain, (int, float)) and not isinstance(score_gain, bool):
+            st.caption(f"The optimizer gained {score_gain:+.2f} match score.")
+        if isinstance(difference, int) and not isinstance(difference, bool):
+            if difference > 0:
+                st.caption(f"The optimal basket spends {_safe_usd(difference)} more.")
+            elif difference < 0:
+                st.caption(f"The optimal basket spends {_safe_usd(-difference)} less.")
+
+    notes = []
+    items = data.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("note"):
+                notes.append(f"{item.get('query')}: {item.get('note')}")
+    if notes:
+        with st.expander("Basket notes", expanded=False):
+            for note in notes:
+                st.write(note)
+    if data.get("note"):
+        st.caption(str(data.get("note")))
+
+
 def _render_results() -> None:
     if st.session_state.page != "Shop":
         return
+    basket_response = st.session_state.get("basket_response")
+    if isinstance(basket_response, dict):
+        _render_basket_results(basket_response)
+        return
+
     response = st.session_state.get("shop_response")
     if not isinstance(response, dict):
         return
@@ -906,6 +1132,8 @@ def _render_results() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
+
+    _render_explanation(response.get("explanation"), response.get("explanation_source"))
 
     if not products:
         st.markdown(
@@ -982,8 +1210,7 @@ def _render_voice_page() -> None:
             st.session_state.notice = "Could not read the recorded audio."
 
         clip = voice.AudioClip(data=st.session_state.voice_clip_bytes or b"", mime_type=st.session_state.voice_mime)
-        # Try to transcribe if possible; if no transcriber, backend rules may refuse
-        result = voice.transcribe_clip(clip, transcribe=None)
+        result = voice.transcribe_clip(clip, transcribe=llm.transcribe_audio)
         st.session_state.voice_result = result
 
         if result.ok and result.action == "search" and result.parsed is not None:
@@ -998,18 +1225,11 @@ def _render_voice_page() -> None:
             if st.button("Confirm & Search", type="primary", key="voice_confirm_search"):
                 try:
                     parsed = result.parsed
-                    item = parsed.items[0].query if parsed.items else ""
-                    budget = parsed.items[0].budget_cents if parsed.items else None
-                    if budget is None and hasattr(parsed, "total_budget_cents"):
-                        budget = parsed.total_budget_cents
-                    if item and budget is not None:
-                        st.session_state.readback = {"item": item, "budget_cents": budget}
-                        st.session_state.pending_query = item
-                        st.session_state.pending_budget_cents = budget
-                        st.session_state.shop_response = None
-                        st.session_state.search_error = ""
-                        st.session_state.page = "Shop"
-                        _run_search()
+                    if _stage_parsed_request(parsed):
+                        if isinstance(st.session_state.get("pending_basket"), dict):
+                            _run_basket_search()
+                        else:
+                            _run_search()
                         st.rerun()
                     else:
                         st.session_state.notice = result.readback

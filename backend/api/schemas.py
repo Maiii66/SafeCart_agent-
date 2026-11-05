@@ -1,7 +1,7 @@
 # backend/api/schemas.py
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictRequest(BaseModel):
@@ -71,6 +71,60 @@ class ShopResponse(BaseModel):
     blocked: List[BlockedSchema] = []
     rejected: List[RejectedSchema] = []
     duplicates: int = 0
+    explanation: str = ""
+    explanation_source: str = "template"
+
+
+class BasketRequest(StrictRequest):
+    items: List[str] = Field(min_length=1, max_length=5)
+    total_budget_cents: int = Field(gt=0, le=10_000_000)
+    limit: int = Field(default=10, ge=1, le=50)
+
+    @field_validator("items")
+    @classmethod
+    def clean_items(cls, value):
+        cleaned = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("Each basket item must be text.")
+            text = item.strip()
+            if not text or len(text) > 200:
+                raise ValueError("Each basket item must be 1-200 characters.")
+            cleaned.append(text)
+        return cleaned
+
+
+class BasketSelectionSchema(BaseModel):
+    category: str
+    product: RankedProductSchema
+
+
+class BasketSummarySchema(BaseModel):
+    total_price_cents: int
+    total_score: float
+    chosen: List[BasketSelectionSchema] = []
+    unfulfilled: List[str] = []
+
+
+class BasketItemResultSchema(BaseModel):
+    query: str
+    product: Optional[RankedProductSchema] = None
+    note: str = ""
+
+
+class BasketResponse(BaseModel):
+    source: str
+    note: str = ""
+    total_budget_cents: int
+    total_cents: int
+    remaining_cents: int
+    items: List[BasketItemResultSchema]
+    optimal: BasketSummarySchema
+    greedy: BasketSummarySchema
+    score_gain: float
+    price_difference_cents: int
+    explanation: str = ""
+    explanation_source: str = "template"
 
 
 class CandidateRequest(StrictRequest):

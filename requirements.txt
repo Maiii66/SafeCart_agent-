@@ -10,3 +10,6 @@ httpx>=0.27          # needed by FastAPI's TestClient
 
 # Frontend
 streamlit>=1.40
+
+# AI
+google-genai>=1.0

@@ -49,6 +49,11 @@ _ITEMS = [
     _p("demo-bud-08", "VoltMax Studio Earbuds", "Earbuds", ["wireless", "bluetooth", "earphones"], 5.0, 3,
        [_offer("shady-deals.example", 399, pid="demo-bud-08")],
        "Premium studio earbuds, normally $299, today only. Suspiciously cheap."),
+    # ---- headphones (the smart-basket demo) ----
+    _p("demo-head-01", "Aurora Planar Magnetic Headphones", "Headphones",
+       ["planar", "magnetic", "headphones", "over-ear"],
+       4.9, 2100, [_offer("demo-shop.example", 6000, pid="demo-head-01")],
+       "Comfortable planar magnetic headphones with clear sound and long battery life."),
     # ---- chargers ----
     _p("demo-chg-01", "VoltLine 20W USB-C Charger", "Chargers", ["usb-c", "fast", "wall", "phone"], 4.5, 640,
        [_offer("demo-shop.example", 1599, pid="demo-chg-01")],
@@ -63,6 +68,10 @@ _ITEMS = [
     _p("demo-chg-04", "ChargePro Duo 40W", "Chargers", ["usb-c", "fast", "dual", "phone"], 4.4, 410,
        [_offer("demo-shop.example", 2750, pid="demo-chg-04")],
        "Two-port 40W charger for a phone and tablet."),
+    _p("demo-chg-05", "VoltEdge 140W Power Brick", "Chargers",
+       ["140w", "power", "brick", "usb-c", "gan"],
+       4.2, 380, [_offer("demo-shop.example", 5000, pid="demo-chg-05")],
+       "High-power 140W power brick for laptops and phones."),
     # ---- phone cases ----
     _p("demo-case-01", "ShieldSkin Clear Case", "Phone Cases", ["case", "clear", "phone", "cover"], 4.3, 900,
        [_offer("demo-shop.example", 1299, pid="demo-case-01")],
@@ -76,6 +85,10 @@ _ITEMS = [
     _p("demo-case-04", "UrbanLeather Folio Case", "Phone Cases", ["case", "leather", "wallet", "phone", "cover"], 4.2, 330,
        [_offer("demo-shop.example", 2900, pid="demo-case-04")],
        "Folio case with card slots."),
+    _p("demo-case-05", "ShieldShell MagSafe Hard Shell Case", "Phone Cases",
+       ["magsafe", "hard", "shell", "case", "phone", "cover"],
+       4.2, 420, [_offer("demo-shop.example", 5000, pid="demo-case-05")],
+       "Rigid MagSafe hard-shell case with reinforced corners."),
 ]
 
 _PRODUCTS = tuple(p for p, _ in _ITEMS)
