@@ -51,7 +51,7 @@ html, body, .stApp, [data-testid="stAppViewContainer"] {
 }
 
 [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
-#MainMenu, footer {
+#MainMenu, footer, a[href="#main-content"], [data-testid="stStatusWidget"] {
     display: none !important;
 }
 
@@ -141,45 +141,56 @@ h1, h2, h3, h4, h5, h6,
     background: #FFFFFF !important;
     border: 1px solid #E8DEC5 !important;
     border-radius: 9999px !important;
-    padding: 0.4rem 0.5rem 0.4rem 1.35rem !important;
+    padding: 0.35rem 0.5rem 0.35rem 1.4rem !important;
     max-width: 860px;
     margin: 0 auto;
     box-shadow: 0 16px 40px rgba(27, 48, 34, 0.06);
+    overflow: hidden !important;
 }
 
 [data-testid="stForm"] [data-testid="stFormSubmitButton"] {
-    margin: 0;
+    margin: 0 !important;
 }
 
+[data-testid="stForm"] [data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stForm"] [data-testid="stVerticalBlock"],
+[data-testid="stForm"] [data-testid="stLayoutWrapper"],
+[data-testid="stForm"] [data-testid="stHorizontalBlock"] {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    gap: 0 !important;
+}
+
+[data-testid="stForm"] [data-testid="stTextInputRootElement"],
+[data-testid="stForm"] .react-aria-TextField,
 [data-testid="stForm"] [data-baseweb="input"],
 [data-testid="stForm"] [data-baseweb="base-input"],
-[data-testid="stForm"] [data-testid="stTextInput"] > div {
+[data-testid="stForm"] [data-testid="stTextInput"] div {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
+    outline: none !important;
+    padding: 0 !important;
 }
 
-[data-testid="stForm"] input,
-[data-testid="stTextInput"] input {
-    background: #FFFFFF !important;
-    color: #1B3022 !important;
-    font-family: "Manrope", sans-serif !important;
-    font-size: 1rem !important;
-    padding: 0.55rem 0.8rem !important;
-    border: 1px solid #E8DEC5 !important;
-    border-radius: 4px !important;
-}
-
+[data-testid="stForm"] input[data-testid="stTextInputField"],
 [data-testid="stForm"] input {
     background: transparent !important;
     border: none !important;
-    padding: 0.55rem 0 !important;
+    padding: 0.65rem 0 !important;
     border-radius: 0 !important;
+    font-family: "Manrope", sans-serif !important;
+    font-size: 1.05rem !important;
+    color: #1B3022 !important;
+    outline: none !important;
+    box-shadow: none !important;
 }
 
 [data-testid="stForm"] input::placeholder {
     color: #7C8578 !important;
-    opacity: 1;
+    opacity: 0.95;
 }
 
 .st-key-search_submit button {
@@ -195,6 +206,59 @@ h1, h2, h3, h4, h5, h6,
 .st-key-search_submit button:hover {
     background: #2D3B2D !important;
     border-color: #2D3B2D !important;
+}
+
+/* Fix regular inputs across the app (cart budget, step-up confirmation) */
+div:not([data-testid="stForm"]) [data-testid="stTextInputRootElement"] {
+    background: #FFFFFF !important;
+    border: 1px solid #E8DEC5 !important;
+    border-radius: 8px !important;
+    padding: 0.15rem 0.5rem !important;
+    box-shadow: none !important;
+}
+
+div:not([data-testid="stForm"]) [data-testid="stTextInputRootElement"]:focus-within {
+    border-color: #1B3022 !important;
+    box-shadow: 0 0 0 1px #1B3022 !important;
+}
+
+div:not([data-testid="stForm"]) input[data-testid="stTextInputField"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 0.5rem 0.3rem !important;
+    color: #1B3022 !important;
+    font-family: "Manrope", sans-serif !important;
+    font-size: 1rem !important;
+}
+
+.sc-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 860px;
+    margin: 0.75rem auto 1.5rem auto;
+}
+
+.sc-suggestion-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #7C8578;
+    margin-right: 0.3rem;
+}
+
+.sc-badge-paused {
+    display: inline-block;
+    background: #C53030;
+    color: #FFFFFF;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0.18rem 0.55rem;
+    border-radius: 9999px;
+    vertical-align: middle;
+    margin-left: 0.6rem;
 }
 
 div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -514,12 +578,9 @@ def _init_state() -> None:
 
     if not st.session_state.get("_demo_ready"):
         st.session_state._demo_ready = True
-        st.session_state.readback = {
-            "item": DEMO_ITEM,
-            "budget_cents": DEMO_BUDGET_CENTS,
-        }
-        st.session_state.pending_query = DEMO_QUERY
-        st.session_state.pending_budget_cents = DEMO_BUDGET_CENTS
+        st.session_state.readback = None
+        st.session_state.pending_query = ""
+        st.session_state.pending_budget_cents = None
 
 
 def _toggle_pause(pause: bool) -> None:
@@ -541,10 +602,11 @@ def _render_header() -> None:
     cart_count = len(st.session_state.cart)
     with st.container(key="safecart_header"):
         logo_col, nav_col, pause_col = st.columns(
-            [2.0, 6.0, 1.4], vertical_alignment="center"
+            [2.3, 5.7, 1.4], vertical_alignment="center"
         )
         with logo_col:
-            st.markdown('<div class="sc-logo">SafeCart</div>', unsafe_allow_html=True)
+            badge = '<span class="sc-badge-paused">PAUSED</span>' if paused else ""
+            st.markdown(f'<div class="sc-logo">SafeCart{badge}</div>', unsafe_allow_html=True)
         with nav_col:
             st.markdown('<div class="sc-nav-row">', unsafe_allow_html=True)
             tabs = ["Shop", "Voice", "Activity", "Log", f"Cart ({cart_count})"]
@@ -654,16 +716,16 @@ def _stage_parsed_request(parsed) -> bool:
     st.session_state.pending_budget_cents = budget
 
     if budget is None:
-        st.session_state.notice = "Add a maximum budget, then search again."
+        st.session_state.notice = "Add a maximum budget (e.g. 'under $50'), then search again."
         return False
-    st.session_state.notice = "Review the read-back and confirm to search."
+    st.session_state.notice = ""
     return True
 
 
 def _handle_search(text: str) -> None:
     text = text.strip()
     if not text:
-        st.session_state.notice = "Tell me what you want and your maximum budget."
+        st.session_state.notice = "Tell me what you want and your maximum budget (e.g. 'earbuds under $50')."
         return
 
     try:
@@ -672,7 +734,12 @@ def _handle_search(text: str) -> None:
         st.session_state.notice = str(error)
         return
 
-    _stage_parsed_request(parsed)
+    can_search = _stage_parsed_request(parsed)
+    if can_search:
+        if isinstance(st.session_state.get("pending_basket"), dict):
+            _run_basket_search()
+        else:
+            _run_search()
 
 
 def _run_search() -> None:
@@ -690,6 +757,7 @@ def _run_search() -> None:
         st.session_state.shop_response = data
         st.session_state.basket_response = None
         st.session_state.search_error = ""
+        st.session_state.readback = None
     else:
         st.session_state.shop_response = None
         st.session_state.search_error = error or "Product search failed."
@@ -709,6 +777,7 @@ def _run_basket_search() -> None:
         st.session_state.basket_response = data
         st.session_state.shop_response = None
         st.session_state.search_error = ""
+        st.session_state.readback = None
     else:
         st.session_state.basket_response = None
         st.session_state.search_error = error or "Basket search failed."
@@ -728,7 +797,7 @@ def _edit_request() -> None:
 
 def _render_search() -> None:
     with st.form("search_form", clear_on_submit=False):
-        text_col, submit_col = st.columns([9, 1.6], vertical_alignment="center")
+        text_col, submit_col = st.columns([8.6, 1.8], vertical_alignment="center")
         with text_col:
             query = st.text_input(
                 "Search request",
@@ -748,6 +817,33 @@ def _render_search() -> None:
         _handle_search(query)
 
 
+def _render_suggestions() -> None:
+    if (
+        st.session_state.get("shop_response")
+        or st.session_state.get("basket_response")
+        or st.session_state.get("readback")
+    ):
+        return
+    st.markdown(
+        '<div style="text-align: center; margin-top: 1.1rem; margin-bottom: 0.35rem;">'
+        '<span style="font-size: 0.76rem; font-weight: 700; color: #7C8578; letter-spacing: 0.08em; text-transform: uppercase;">'
+        'Popular Searches:</span></div>',
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(4)
+    suggestions = [
+        ("Wireless earbuds < $50", "find me wireless earbuds under fifty dollars"),
+        ("Phone charger < $25", "find a phone charger under 25 dollars"),
+        ("Mechanical keyboard < $80", "mechanical keyboard under eighty dollars"),
+        ("Smart basket ($100)", "earbuds, phone charger, and a case, $100 total"),
+    ]
+    for idx, (label, query) in enumerate(suggestions):
+        with cols[idx]:
+            if st.button(label, key=f"sug_{idx}", type="secondary", use_container_width=True):
+                _handle_search(query)
+                st.rerun()
+
+
 def _render_notice() -> None:
     message = st.session_state.get("notice")
     if message:
@@ -761,6 +857,8 @@ def _render_notice() -> None:
 def _render_readback() -> None:
     if st.session_state.page != "Shop":
         return
+    if st.session_state.get("shop_response") or st.session_state.get("basket_response"):
+        return
     readback = st.session_state.get("readback")
     if not isinstance(readback, dict):
         return
@@ -773,17 +871,17 @@ def _render_readback() -> None:
         body = html.escape(str(text))
     elif item and budget is not None:
         body = (
-            f"(heard: <mark>{html.escape(str(item))}</mark>, "
+            f"Understood: <mark>{html.escape(str(item))}</mark>, "
             f"<mark>maximum {html.escape(_safe_usd(budget))}</mark>. "
-            "Is that right? I will search Channel3 for live listings.)"
+            "Is that right? I will search for live listings."
         )
     elif item:
         body = (
-            f"(heard: <mark>{html.escape(str(item))}</mark>. "
-            "I could not find a budget. Please add one before I search.)"
+            f"Looking for: <mark>{html.escape(str(item))}</mark>. "
+            "Please specify a maximum budget (e.g. 'under $50') before I search."
         )
     else:
-        body = "(I could not tell what you want to buy. Please try another request.)"
+        body = "I could not tell what you want to buy. Please try another request (e.g. 'earbuds under $50')."
 
     with st.container(border=True, key="readback_card"):
         st.markdown(
@@ -1305,13 +1403,17 @@ def _render_last_success(currency: str) -> bool:
 
 
 def _render_budget_input():
-    if st.session_state.get("cart_budget_input") is None:
+    if not st.session_state.get("cart_budget_input"):
         pending = st.session_state.get("pending_budget_cents")
-        st.session_state.cart_budget_input = (
-            format_usd(pending)
-            if isinstance(pending, int) and not isinstance(pending, bool)
-            else ""
-        )
+        if isinstance(pending, int) and not isinstance(pending, bool) and pending > 0:
+            st.session_state.cart_budget_input = format_usd(pending)
+        else:
+            cart = st.session_state.get("cart") or []
+            total_est = sum(item.get("price_cents") or 0 for item in cart)
+            if total_est > 0:
+                st.session_state.cart_budget_input = format_usd(total_est)
+            else:
+                st.session_state.cart_budget_input = ""
 
     st.markdown("### Purchase budget")
     budget_text = st.text_input(
@@ -1845,15 +1947,96 @@ def _render_cart_page() -> None:
     _render_checkout_error()
 
 
-def _render_activity_log() -> None:
-    if st.session_state.page not in ("Activity", "Log"):
+def _render_activity_page() -> None:
+    if st.session_state.page != "Activity":
         return
-    st.markdown(f'<h1 class="sc-page-title">{st.session_state.page}</h1>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sc-empty">Activity and logs are available via the backend API. '
-        "Use the API routes /api/logs and /api/orders for full details.</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown('<h1 class="sc-page-title">Activity & Orders</h1>', unsafe_allow_html=True)
+
+    col_hdr, col_btn = st.columns([8, 2], vertical_alignment="center")
+    with col_hdr:
+        st.caption("All orders created and paid through PayPal Sandbox.")
+    with col_btn:
+        if st.button("Refresh", key="refresh_activity", type="secondary", use_container_width=True):
+            st.rerun()
+
+    data, error = _api("GET", "/api/orders")
+    if error:
+        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
+        return
+
+    orders = data.get("orders") if isinstance(data, dict) else []
+    if not orders:
+        st.markdown(
+            '<div class="sc-empty">No orders found yet. Search for products in the '
+            '<strong>Shop</strong> tab and click "Add to Cart" to start checkout.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    currency = str(st.session_state.status.get("currency") or config.CURRENCY or "USD")
+    for order in orders:
+        _render_order_details(order, str(order.get("currency") or currency), f"Order #{order.get('id')}")
+
+
+def _render_audit_log_page() -> None:
+    if st.session_state.page != "Log":
+        return
+    st.markdown('<h1 class="sc-page-title">Safety & Security Audit Log</h1>', unsafe_allow_html=True)
+
+    col_hdr, col_btn = st.columns([8, 2], vertical_alignment="center")
+    with col_hdr:
+        st.caption("Cryptographic audit trail tracking all safety rule decisions, injection checks, and payments.")
+    with col_btn:
+        if st.button("Refresh", key="refresh_logs", type="secondary", use_container_width=True):
+            st.rerun()
+
+    data, error = _api("GET", "/api/logs")
+    if error:
+        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
+        return
+
+    logs = data.get("logs") if isinstance(data, dict) else []
+    if not logs:
+        st.markdown(
+            '<div class="sc-empty">No audit logs recorded yet.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    for entry in logs:
+        actor = html.escape(str(entry.get("actor") or "system"))
+        action = html.escape(str(entry.get("action") or ""))
+        detail = html.escape(str(entry.get("detail") or ""))
+        ts = html.escape(str(entry.get("ts") or ""))
+        ref = entry.get("ref")
+        ref_text = f" &middot; Ref: <code>{html.escape(str(ref))}</code>" if ref else ""
+
+        badge_color = "#1B3022"
+        badge_bg = "#FFF3D5"
+        if "injection" in action or "blocked" in action:
+            badge_color = "#991B1B"
+            badge_bg = "#FEE2E2"
+        elif actor == "paypal":
+            badge_color = "#1E40AF"
+            badge_bg = "#DBEAFE"
+        elif actor == "guardrail":
+            badge_color = "#92400E"
+            badge_bg = "#FEF3C7"
+
+        st.markdown(
+            '<div style="margin-bottom: 0.75rem; padding: 0.85rem 1.15rem; '
+            'background: #FFFFFF; border: 1px solid #E8DEC5; border-radius: 8px;">'
+            '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">'
+            f'<span><span style="background: {badge_bg}; color: {badge_color}; border-radius: 9999px; '
+            f'padding: 0.15rem 0.55rem; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">'
+            f'{actor}</span> '
+            f'<strong style="margin-left: 0.45rem; font-size: 0.88rem; color: #1B3022;">{action}</strong></span>'
+            f'<span style="font-size: 0.75rem; color: #7C8578;">{ts}</span>'
+            '</div>'
+            f'<div style="font-size: 0.86rem; color: #2D3B2D; line-height: 1.45;">{detail}{ref_text}</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
 
 _init_state()
@@ -1869,6 +2052,7 @@ if st.session_state.page == "Shop":
     )
     st.markdown('<div id="shop_search"></div>', unsafe_allow_html=True)
     _render_search()
+    _render_suggestions()
     _render_notice()
     _render_readback()
     _render_search_error()
@@ -1879,6 +2063,13 @@ elif st.session_state.page == "Voice":
 elif st.session_state.page == "Cart":
     _render_notice()
     _render_cart_page()
+elif st.session_state.page == "Activity":
+    _render_notice()
+    _render_activity_page()
+elif st.session_state.page == "Log":
+    _render_notice()
+    _render_audit_log_page()
 else:
     _render_notice()
-    _render_activity_log()
+    st.session_state.page = "Shop"
+    st.rerun()

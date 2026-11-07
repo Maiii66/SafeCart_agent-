@@ -254,7 +254,7 @@ def friendly_error(code, fallback="") -> str:
 
 
 def format_epoch(value) -> str:
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return ""
     try:
         return datetime.fromtimestamp(value).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
