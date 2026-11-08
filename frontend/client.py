@@ -140,3 +140,11 @@ def complete_order(order_id):
         {},
         timeout=PAYMENT_TIMEOUT_SECONDS,
     )
+
+
+def list_orders(limit: int = 50):
+    return api_request("GET", f"/api/orders?limit={int(limit)}")
+
+
+def list_logs(limit: int = 100):
+    return api_request("GET", f"/api/logs?limit={int(limit)}")
