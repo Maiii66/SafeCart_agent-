@@ -379,3 +379,17 @@ def test_complete_order_rejects_bad_ids(fake_http):
     assert data is None
     assert "identifier is missing" in error
     assert fake_http.calls == []
+
+
+def test_list_orders_and_logs(fake_http):
+    fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"orders": []}))
+    data, error = api_client.list_orders(10)
+    assert error == ""
+    assert data == {"orders": []}
+    assert fake_http.calls[0]["url"].endswith("/api/orders?limit=10")
+
+    fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"logs": []}))
+    data, error = api_client.list_logs(20)
+    assert error == ""
+    assert data == {"logs": []}
+    assert fake_http.calls[1]["url"].endswith("/api/logs?limit=20")

@@ -840,6 +840,7 @@ def _render_suggestions() -> None:
     for idx, (label, query) in enumerate(suggestions):
         with cols[idx]:
             if st.button(label, key=f"sug_{idx}", type="secondary", use_container_width=True):
+                st.session_state.search_input = query
                 _handle_search(query)
                 st.rerun()
 
@@ -1071,8 +1072,16 @@ def _product_card(product: dict, show_cart_button: bool = True) -> None:
     )
 
     if show_cart_button:
-        if st.button("Add to Cart 🛒", key=f"add_cart_{product.get('id')}_{domain}", type="secondary"):
-            _add_to_cart(product)
+        cart_pids = {item.get("product_id") for item in st.session_state.get("cart") or []}
+        pid = product.get("id")
+        is_in_cart = pid in cart_pids
+        btn_label = "In Cart ✓" if is_in_cart else "Add to Cart 🛒"
+        btn_type = "primary" if is_in_cart else "secondary"
+        if st.button(btn_label, key=f"add_cart_{pid}_{domain}", type=btn_type):
+            if is_in_cart:
+                st.session_state.notice = "This item is already in your cart. Review it in the Cart tab."
+            else:
+                _add_to_cart(product)
             st.rerun()
 
 
@@ -1460,7 +1469,12 @@ def _render_cart_items(review: dict, locked: bool) -> None:
                 if _safe_http_url(image_url):
                     st.image(image_url, use_container_width=True)
                 else:
-                    st.caption("No image")
+                    st.markdown(
+                        '<div style="width: 68px; height: 68px; background: #FCF8EE; border: 1px solid #E8DEC5; '
+                        'border-radius: 8px; display: flex; align-items: center; justify-content: center; '
+                        'font-size: 1.8rem; margin: 0 auto;">🛍️</div>',
+                        unsafe_allow_html=True,
+                    )
             with detail_col:
                 link_html = ""
                 if _safe_http_url(url):
@@ -1896,11 +1910,21 @@ def _render_cart_page() -> None:
     if st.session_state.page != "Cart":
         return
 
-    st.markdown('<h1 class="sc-page-title">Cart</h1>', unsafe_allow_html=True)
     currency = str(st.session_state.status.get("currency") or config.CURRENCY or "USD")
     had_success = _render_last_success(currency)
 
     cart = st.session_state.cart
+    order_exists = bool(st.session_state.get("checkout_order_id"))
+
+    col_head, col_clear = st.columns([8, 2], vertical_alignment="center")
+    with col_head:
+        st.markdown('<h1 class="sc-page-title" style="margin: 0.8rem 0;">Cart</h1>', unsafe_allow_html=True)
+    with col_clear:
+        if bool(cart) and not order_exists and st.button("Clear Cart", key="clear_all_cart", type="secondary", use_container_width=True):
+            st.session_state.cart = []
+            _invalidate_checkout_state()
+            st.rerun()
+
     if not cart:
         if not had_success:
             st.markdown(
