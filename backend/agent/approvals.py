@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from backend import config
 from backend import guardrails
 from backend import money
+from backend.agent import policy
 from database import repository
 
 
@@ -88,6 +89,11 @@ def create_approval(candidates, budget_cents, source, flags=None, now=None):
     # Each item can fit the budget while the whole basket does not, so check the sum too.
     if total_cents > budget_cents:
         return _refuse("OVER_BUDGET", "The items together cost more than the budget.")
+
+    # The person's own spending policy is checked here as well as at checkout.
+    policy_verdict = policy.check_approval(items, total_cents, now=now)
+    if not policy_verdict.ok:
+        return _refuse(policy_verdict.code, policy_verdict.reason)
 
     # Rule 6 is decided NOW and written INSIDE the signed payload, so nobody can switch it off later.
     remaining_cap = limits.remaining_daily_cap(now)

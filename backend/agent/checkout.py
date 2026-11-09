@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from backend import config
 from backend import guardrails
-from backend.agent import approvals, limits, orders
+from backend.agent import approvals, limits, orders, policy
 from backend.models import Offer
 from backend.money import format_usd
 from backend.services import catalog, paypal_service
@@ -64,14 +64,31 @@ def _step_up_confirmed(approval_id):
 
 
 def _check_live_price(item, source, budget_cents):
-    """Compare what the person approved with the listing RIGHT NOW. If we cannot check, we refuse."""
+    """Compare what the person approved with the listing RIGHT NOW.
+
+    Returns (Verdict, live item). The live item carries the domain and price that were just
+    verified, so the spending policy is checked against the same data PayPal will be paid.
+    """
     try:
         live_product = catalog.get_live_product(item["product_id"], source)
     except catalog.LivePriceUnavailable as error:
-        return guardrails.Verdict(False, "PRICE_UNVERIFIABLE", str(error))
+        return guardrails.Verdict(False, "PRICE_UNVERIFIABLE", str(error)), None
     approved = Offer(domain=item["domain"], price_cents=item["price_cents"], currency=config.CURRENCY,
                      availability="InStock", condition="new", url="")
-    return guardrails.verify_live_offer(approved, live_product, budget_cents)
+    verdict = guardrails.verify_live_offer(approved, live_product, budget_cents)
+    if not verdict.ok:
+        return verdict, None
+
+    live_offer = next((offer for offer in live_product.offers
+                       if offer.domain.lower() == item["domain"].lower()), None)
+    if live_offer is None:
+        return guardrails.Verdict(False, "OFFER_GONE", f"{item['domain']} no longer lists this product."), None
+    return verdict, {
+        "product_id": item["product_id"],
+        "title": item.get("title"),
+        "domain": live_offer.domain,
+        "price_cents": live_offer.price_cents,
+    }
 
 
 def execute_checkout(approval_id, now=None):
@@ -103,17 +120,25 @@ def execute_checkout(approval_id, now=None):
             return _refuse(limit.code, limit.reason, approval_id)
 
     # 5. Re-check EVERY item's live price (fail closed if it cannot be checked).
+    live_items = []
     for item in payload["items"]:
-        price_check = _check_live_price(item, payload.get("source"), payload["budget_cents"])
+        price_check, live_item = _check_live_price(item, payload.get("source"), payload["budget_cents"])
         if not price_check.ok:
             title = item.get("title") or item["product_id"]
             return _refuse(price_check.code, f"{title}: {price_check.reason}", approval_id)
+        live_items.append(live_item)
 
-    # 6. Use the approval up BEFORE calling PayPal. Only one request can win this atomic step.
+    # 6. The person's spending policy runs again on the verified live offers.
+    live_total = sum(item["price_cents"] for item in live_items)
+    policy_verdict = policy.check_checkout(live_items, live_total, now=now)
+    if not policy_verdict.ok:
+        return _refuse(policy_verdict.code, policy_verdict.reason, approval_id)
+
+    # 7. Use the approval up BEFORE calling PayPal. Only one request can win this atomic step.
     if not repository.mark_approval_used(approval_id, int(now)):
         return _refuse("ALREADY_USED", "This approval was just used by another request.", approval_id)
 
-    # 7. Ask PayPal for the order, using ONLY the signed items. The approval id is the idempotency key.
+    # 8. Ask PayPal for the order, using ONLY the signed items. The approval id is the idempotency key.
     line_items = [paypal_service.LineItem(item.get("title") or item["product_id"], item["price_cents"], 1)
                   for item in payload["items"]]
     total_cents = payload["total_cents"]

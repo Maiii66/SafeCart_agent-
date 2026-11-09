@@ -78,6 +78,22 @@ def fetch_status():
     return api_request("GET", "/api/status")
 
 
+def get_policy():
+    return api_request("GET", "/api/policy")
+
+
+def propose_policy(text):
+    return api_request("POST", "/api/policy/propose", {"text": str(text or "")})
+
+
+def confirm_policy(policy):
+    return api_request("POST", "/api/policy/confirm", policy)
+
+
+def delete_policy():
+    return api_request("DELETE", "/api/policy")
+
+
 def pause():
     return api_request("POST", "/api/pause", {})
 

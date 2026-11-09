@@ -198,6 +198,49 @@ def set_setting(key, value):
         conn.close()
 
 
+def delete_setting(key):
+    connection.init_db()
+    conn = connection.get_connection()
+    try:
+        cur = conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+_POLICY_KEY = "spending_policy"
+
+
+def get_policy():
+    """The active spending policy as a dict, or None when no policy is saved."""
+    raw = get_setting(_POLICY_KEY)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def save_policy(policy):
+    connection.init_db()
+    conn = connection.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (_POLICY_KEY, json.dumps(policy, sort_keys=True, separators=(",", ":"))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_policy():
+    return delete_setting(_POLICY_KEY)
+
+
 def save_product_flags(product_id, source, flags, seen_at):
     """Store the latest flag list for one product from one source."""
     connection.init_db()

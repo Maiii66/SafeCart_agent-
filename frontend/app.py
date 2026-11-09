@@ -574,6 +574,7 @@ def _init_state() -> None:
         "last_order": None,
         "success_message": "",
         "cart_budget_input": None,
+        "policy_proposal": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -611,14 +612,15 @@ def _render_header() -> None:
             st.markdown(f'<div class="sc-logo">SafeCart{badge}</div>', unsafe_allow_html=True)
         with nav_col:
             st.markdown('<div class="sc-nav-row">', unsafe_allow_html=True)
-            tabs = ["Shop", "Voice", "Activity", "Log", f"Cart ({cart_count})"]
+            tabs = ["Shop", "Voice", "Rules", "Activity", "Log", f"Cart ({cart_count})"]
             with st.container(key="nav_tabs"):
                 cols = st.columns(len(tabs))
                 for idx, tab in enumerate(tabs):
                     is_active = (st.session_state.page == "Shop" and tab == "Shop") or (
                         st.session_state.page == "Voice" and tab == "Voice"
-                    ) or (st.session_state.page == "Activity" and tab == "Activity") or (
-                        st.session_state.page == "Log" and tab == "Log"
+                    ) or (st.session_state.page == "Rules" and tab == "Rules") or (
+                        st.session_state.page == "Activity" and tab == "Activity"
+                    ) or (st.session_state.page == "Log" and tab == "Log"
                     ) or (st.session_state.page == "Cart" and tab.startswith("Cart"))
                     with cols[idx]:
                         if st.button(
@@ -631,6 +633,8 @@ def _render_header() -> None:
                                 st.session_state.page = "Shop"
                             elif tab == "Voice":
                                 st.session_state.page = "Voice"
+                            elif tab == "Rules":
+                                st.session_state.page = "Rules"
                             elif tab == "Activity":
                                 st.session_state.page = "Activity"
                             elif tab == "Log":
@@ -2042,6 +2046,122 @@ def _render_cart_page() -> None:
     _render_checkout_error()
 
 
+def _policy_lines(data: dict) -> list:
+    rows = data.get("description") if isinstance(data, dict) else None
+    return [str(row) for row in rows] if isinstance(rows, list) else []
+
+
+def _render_rules_page() -> None:
+    if st.session_state.page != "Rules":
+        return
+    st.markdown('<h1 class="sc-page-title">Spending Rules</h1>', unsafe_allow_html=True)
+    st.caption(
+        "Write your own limits in plain English. SafeCart turns them into hard checks that run "
+        "at search, approval and checkout. A rule can only make the global limits stricter."
+    )
+
+    current, error = _api("GET", "/api/policy")
+    if error:
+        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
+        return
+
+    with st.container(border=True):
+        st.markdown("**Current rules**")
+        rows = _policy_lines(current)
+        if rows:
+            for row in rows:
+                st.write(f"- {row}")
+        else:
+            st.markdown('<div class="sc-empty">No spending rules saved yet.</div>',
+                        unsafe_allow_html=True)
+
+        if rows:
+            remove = st.checkbox(
+                "I want to remove these spending rules", key="policy_delete_confirm"
+            )
+            if st.button(
+                "Delete my rules",
+                key="policy_delete",
+                type="secondary",
+                disabled=not remove,
+            ):
+                _, error = _api("DELETE", "/api/policy")
+                st.session_state.policy_proposal = None
+                st.session_state.notice = error or "Your spending rules were deleted."
+                st.rerun()
+
+    st.markdown("### Write a rule")
+    st.caption(
+        "Example: max $50 per item, max $200 a day, trusted stores only, "
+        "max 3 orders a day, don't buy from walmart.com"
+    )
+    text = st.text_area(
+        "Your rules",
+        key="policy_text_input",
+        height=110,
+        max_chars=500,
+        label_visibility="collapsed",
+        placeholder="max $50 per item, trusted stores only, max 3 orders a day",
+    )
+    if st.button("Review rules", key="policy_propose", type="primary"):
+        proposal, error = api_client.propose_policy(text)
+        if error:
+            st.session_state.policy_proposal = None
+            st.session_state.notice = error
+        elif not isinstance(proposal, dict) or not proposal.get("ok"):
+            st.session_state.policy_proposal = None
+            st.session_state.notice = (
+                str(proposal.get("reason") or "Those rules could not be understood.")
+                if isinstance(proposal, dict)
+                else "Those rules could not be understood."
+            )
+        else:
+            st.session_state.policy_proposal = proposal
+            st.session_state.notice = ""
+        st.rerun()
+
+    proposal = st.session_state.get("policy_proposal")
+    if not isinstance(proposal, dict):
+        return
+
+    with st.container(border=True):
+        st.markdown("**Review before saving**")
+        for row in _policy_lines(proposal):
+            st.write(f"- {row}")
+        if not _policy_lines(proposal):
+            st.info("No rules were found in that text.")
+
+        clamped = proposal.get("clamped")
+        if isinstance(clamped, list):
+            for notice in clamped:
+                st.warning(str(notice))
+
+        source = "Gemini" if proposal.get("source") == "gemini" else "SafeCart rules"
+        st.caption(f"Read by {source}. Nothing is enforced until you confirm.")
+
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            if st.button("Confirm and save rules", key="policy_confirm", type="primary",
+                         use_container_width=True):
+                saved, error = api_client.confirm_policy(proposal.get("policy") or {})
+                if error:
+                    st.session_state.notice = error
+                elif not isinstance(saved, dict) or not saved.get("ok"):
+                    st.session_state.notice = (
+                        str(saved.get("reason") or "The rules could not be saved.")
+                        if isinstance(saved, dict)
+                        else "The rules could not be saved."
+                    )
+                else:
+                    st.session_state.policy_proposal = None
+                    st.session_state.notice = "Your spending rules are now active."
+                st.rerun()
+        with cancel_col:
+            if st.button("Cancel", key="policy_cancel", use_container_width=True):
+                st.session_state.policy_proposal = None
+                st.rerun()
+
+
 def _render_activity_page() -> None:
     if st.session_state.page != "Activity":
         return
@@ -2156,6 +2276,9 @@ if st.session_state.page == "Shop":
 elif st.session_state.page == "Voice":
     _render_notice()
     _render_voice_page()
+elif st.session_state.page == "Rules":
+    _render_notice()
+    _render_rules_page()
 elif st.session_state.page == "Cart":
     _render_notice()
     _render_cart_page()

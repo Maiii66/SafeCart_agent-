@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from backend import guardrails
-from backend.agent import dedupe, injection, optimizer, scoring
+from backend.agent import dedupe, injection, optimizer, policy, scoring
 from backend.models import Candidate
 from backend.services import catalog
 from database import repository
@@ -58,7 +58,9 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
     """Search, enforce every check, merge duplicates, and rank what is left."""
     now = time.time() if now is None else now
     fetch = min(max(limit * 3, 10), 50)
-    max_price = budget_cents if _is_positive_budget(budget_cents) else None
+    active_policy = policy.get_policy()
+    search_budget = policy.effective_search_budget(budget_cents, active_policy)
+    max_price = search_budget if _is_positive_budget(search_budget) else None
     found = catalog.search_products(query, max_price_cents=max_price, limit=fetch)
 
     # Product text is untrusted. Blocked listings are logged with a clean title.
@@ -72,8 +74,9 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
             product.id,
         )
 
-    filtered = guardrails.filter_within_budget(safe, budget_cents)
+    filtered = guardrails.filter_within_budget(safe, search_budget)
     kept, duplicates = dedupe.dedupe_candidates(list(filtered.kept))
+    kept, policy_rejected = policy.filter_candidates(kept, active_policy)
 
     outliers = scoring.price_outlier_ids(kept)
     prior = scoring.prior_mean_of([item.product for item in kept])
@@ -82,7 +85,7 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
     for candidate in kept:
         is_outlier = candidate.product.id in outliers
         score, breakdown = scoring.score_candidate(
-            candidate, query, budget_cents, prior, is_outlier=is_outlier
+            candidate, query, search_budget, prior, is_outlier=is_outlier
         )
         flags = ("suspicious_price",) if is_outlier else ()
         ranked.append(RankedCandidate(candidate, score, breakdown, flags))
@@ -104,7 +107,8 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
     query_text = injection.sanitize_for_llm(query, 60)
     detail = (
         f"'{query_text}': {len(ranked)} shown, {len(blocked)} blocked by the injection guard, "
-        f"{len(filtered.rejected)} over budget or unavailable, {len(duplicates)} duplicates"
+        f"{len(filtered.rejected)} over budget or unavailable, "
+        f"{len(policy_rejected)} rejected by your spending policy, {len(duplicates)} duplicates"
     )
     repository.add_log("agent", "search", detail, None)
 
@@ -113,7 +117,7 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
         note=found.note,
         ranked=tuple(ranked[:limit]),
         blocked=tuple(blocked),
-        rejected=tuple(filtered.rejected),
+        rejected=tuple(filtered.rejected) + tuple(policy_rejected),
         duplicates=tuple(duplicates),
     )
 

@@ -34,6 +34,10 @@ PROTECTED = [
     ("GET", "/api/status", None),
     ("POST", "/api/pause", None),
     ("POST", "/api/resume", None),
+    ("GET", "/api/policy", None),
+    ("POST", "/api/policy/propose", {"text": "max $50 per item"}),
+    ("POST", "/api/policy/confirm", {"max_item_cents": 5000}),
+    ("DELETE", "/api/policy", None),
 ]
 
 PARAM_TEMPLATES = {

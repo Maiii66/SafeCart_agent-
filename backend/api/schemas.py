@@ -146,6 +146,48 @@ class ApprovalResponse(BaseModel):
     payload: Optional[dict] = None
 
 
+class PolicySchema(StrictRequest):
+    max_item_cents: Optional[int] = Field(default=None, strict=True, gt=0, le=10_000_000)
+    max_order_cents: Optional[int] = Field(default=None, strict=True, gt=0, le=10_000_000)
+    max_daily_spend_cents: Optional[int] = Field(default=None, strict=True, gt=0, le=10_000_000)
+    max_orders_per_hour: Optional[int] = Field(default=None, strict=True, gt=0, le=100_000)
+    max_orders_per_day: Optional[int] = Field(default=None, strict=True, gt=0, le=100_000)
+    trusted_only: bool = False
+    blocked_merchants: List[str] = Field(default_factory=list, max_length=50)
+
+
+class PolicyProposeRequest(StrictRequest):
+    text: str = Field(min_length=1, max_length=500)
+
+
+class PolicyProposalResponse(BaseModel):
+    ok: bool
+    code: str
+    reason: str = ""
+    policy: Optional[PolicySchema] = None
+    clamped: List[str] = []
+    description: List[str] = []
+    summary: str = ""
+    source: str = ""
+
+
+class PolicyStateResponse(BaseModel):
+    ok: bool
+    code: str
+    reason: str = ""
+    policy: Optional[PolicySchema] = None
+    description: List[str] = []
+    summary: str = ""
+    clamped: List[str] = []
+
+
+class PolicyDeleteResponse(BaseModel):
+    ok: bool
+    code: str
+    reason: str = ""
+    deleted: bool = False
+
+
 class StepUpRequest(StrictRequest):
     typed_text: str = Field(min_length=1, max_length=40)
 
