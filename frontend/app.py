@@ -20,6 +20,9 @@ from backend.services import llm
 from frontend import checkout_flow as flow
 from frontend import client as api_client
 from frontend.intent import looks_like_spending_rule
+from frontend import pages
+from frontend.ui_helpers import safe_http_url as _safe_http_url
+from frontend.ui_helpers import safe_usd as _safe_usd
 from frontend import voice_flow
 
 st.set_page_config(
@@ -29,9 +32,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-DEMO_QUERY = "find me wireless earbuds under fifty dollars"
-DEMO_ITEM = "earbuds"
-DEMO_BUDGET_CENTS = 5000
 RESET_APPROVAL_CODES = {
     "ALREADY_USED",
     "BAD_PAYLOAD",
@@ -525,18 +525,14 @@ def _api(method: str, path: str, payload: dict | None = None):
 
 
 def _refresh_status() -> None:
+    if st.session_state.get("status_loaded"):
+        return
     data, error = _api("GET", "/api/status")
     if isinstance(data, dict):
         st.session_state.status = data
+        st.session_state.status_loaded = True
     else:
-        st.session_state.status_error = error
-
-
-def _safe_usd(cents) -> str:
-    try:
-        return format_usd(int(cents))
-    except (TypeError, ValueError):
-        return "$0.00"
+        st.session_state.status_loaded = False
 
 
 def _init_state() -> None:
@@ -550,7 +546,7 @@ def _init_state() -> None:
         "basket_response": None,
         "search_error": "",
         "status": {},
-        "status_error": "",
+        "status_loaded": False,
         "notice": "",
         "cart": [],
         "voice_result": None,
@@ -576,10 +572,9 @@ def _init_state() -> None:
         "success_message": "",
         "cart_budget_input": None,
         "policy_proposal": None,
-        "agent_response": None,
-        "agent_error": "",
         "agent_trace": [],
         "active_policy": None,
+        "active_policy_loaded": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -596,6 +591,7 @@ def _toggle_pause(pause: bool) -> None:
     data, error = _api("POST", endpoint, {})
     if isinstance(data, dict):
         st.session_state.status = data
+        st.session_state.status_loaded = True
         st.session_state.notice = (
             "SafeCart is paused. No new spending can start."
             if data.get("paused")
@@ -658,9 +654,14 @@ def _render_header() -> None:
 
 
 def _render_shop_policy() -> None:
-    current, error = api_client.get_policy()
+    if st.session_state.get("active_policy_loaded"):
+        current = st.session_state.get("active_policy")
+        error = ""
+    else:
+        current, error = api_client.get_policy()
+        st.session_state.active_policy = current if isinstance(current, dict) else None
+        st.session_state.active_policy_loaded = isinstance(current, dict)
     if isinstance(current, dict):
-        st.session_state.active_policy = current
         rows = current.get("description") or []
         if rows:
             left, right = st.columns([9, 1])
@@ -669,6 +670,8 @@ def _render_shop_policy() -> None:
             with right:
                 if st.button("Remove", key="shop_policy_remove"):
                     _, delete_error = api_client.delete_policy()
+                    st.session_state.active_policy = None
+                    st.session_state.active_policy_loaded = False
                     st.session_state.notice = delete_error or "Your spending rules were removed."
                     st.rerun()
     elif error:
@@ -687,11 +690,14 @@ def _render_shop_policy() -> None:
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
             if st.button("Confirm", key="shop_policy_confirm", type="primary", use_container_width=True):
-                saved, save_error = api_client.confirm_policy(proposal.get("policy") or {})
+                with st.spinner("Saving your spending rule..."):
+                    saved, save_error = api_client.confirm_policy(proposal.get("policy") or {})
                 if save_error:
                     st.session_state.notice = save_error
                 elif isinstance(saved, dict) and saved.get("ok"):
                     st.session_state.policy_proposal = None
+                    st.session_state.active_policy = saved
+                    st.session_state.active_policy_loaded = True
                     st.session_state.notice = "Your spending rules are now active."
                 else:
                     st.session_state.notice = "The spending rules could not be saved."
@@ -804,23 +810,20 @@ def _handle_search(text: str) -> None:
 
     can_search = _stage_parsed_request(parsed)
     if can_search:
-        _run_background_agent(text, _basket_budget(parsed))
-        if isinstance(st.session_state.get("pending_basket"), dict):
-            _run_basket_search()
-        else:
-            _run_search()
+        with st.spinner("Finding safe options and checking the details..."):
+            _run_background_agent(text, _basket_budget(parsed))
+            if isinstance(st.session_state.get("pending_basket"), dict):
+                _run_basket_search()
+            else:
+                _run_search()
 
 
 def _run_background_agent(goal: str, budget_cents=None) -> None:
     data, error = api_client.run_agent(goal, budget_cents)
     if isinstance(data, dict) and data.get("ok"):
-        st.session_state.agent_response = data
         st.session_state.agent_trace = data.get("trace") or []
-        st.session_state.agent_error = ""
     else:
-        st.session_state.agent_response = None
         st.session_state.agent_trace = []
-        st.session_state.agent_error = error or ""
 
 
 def _run_search() -> None:
@@ -1146,13 +1149,6 @@ def _handle_paypal_return() -> None:
         _clear_paypal_query_params()
         if token:
             _cancel_returned_order(token)
-
-
-def _safe_http_url(url) -> bool:
-    if not isinstance(url, str):
-        return False
-    parsed = urlparse(url)
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def _add_to_cart(product: dict, source=None) -> None:
@@ -1557,9 +1553,10 @@ def _render_voice_page() -> None:
             fingerprint, st.session_state.get("voice_result_hash")
         ):
             clip = voice.AudioClip(data=audio_bytes, mime_type=audio_mime)
-            st.session_state.voice_result = voice.transcribe_clip(
-                clip, transcribe=llm.transcribe_audio_checked
-            )
+            with st.spinner("Transcribing your request securely..."):
+                st.session_state.voice_result = voice.transcribe_clip(
+                    clip, transcribe=llm.transcribe_audio_checked
+                )
             st.session_state.voice_result_hash = fingerprint
 
         result = st.session_state.get("voice_result")
@@ -2175,214 +2172,6 @@ def _render_cart_page() -> None:
     _render_checkout_error()
 
 
-def _policy_lines(data: dict) -> list:
-    rows = data.get("description") if isinstance(data, dict) else None
-    return [str(row) for row in rows] if isinstance(rows, list) else []
-
-
-def _render_rules_page() -> None:
-    if st.session_state.page != "Rules":
-        return
-    st.markdown('<h1 class="sc-page-title">Spending Rules</h1>', unsafe_allow_html=True)
-    st.caption(
-        "Write your own limits in plain English. SafeCart turns them into hard checks that run "
-        "at search, approval and checkout. A rule can only make the global limits stricter."
-    )
-
-    current, error = _api("GET", "/api/policy")
-    if error:
-        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
-        return
-
-    with st.container(border=True):
-        st.markdown("**Current rules**")
-        rows = _policy_lines(current)
-        if rows:
-            for row in rows:
-                st.write(f"- {row}")
-        else:
-            st.markdown('<div class="sc-empty">No spending rules saved yet.</div>',
-                        unsafe_allow_html=True)
-
-        if rows:
-            remove = st.checkbox(
-                "I want to remove these spending rules", key="policy_delete_confirm"
-            )
-            if st.button(
-                "Delete my rules",
-                key="policy_delete",
-                type="secondary",
-                disabled=not remove,
-            ):
-                _, error = _api("DELETE", "/api/policy")
-                st.session_state.policy_proposal = None
-                st.session_state.notice = error or "Your spending rules were deleted."
-                st.rerun()
-
-    st.markdown("### Write a rule")
-    st.caption(
-        "Example: max \\$50 per item, max \\$200 a day, trusted stores only, "
-        "max 3 orders a day, don't buy from walmart.com"
-    )
-    text = st.text_area(
-        "Your rules",
-        key="policy_text_input",
-        height=110,
-        max_chars=500,
-        label_visibility="collapsed",
-        placeholder="max \\$50 per item, trusted stores only, max 3 orders a day",
-    )
-    if st.button("Review rules", key="policy_propose", type="primary"):
-        proposal, error = api_client.propose_policy(text)
-        if error:
-            st.session_state.policy_proposal = None
-            st.session_state.notice = error
-        elif not isinstance(proposal, dict) or not proposal.get("ok"):
-            st.session_state.policy_proposal = None
-            st.session_state.notice = (
-                str(proposal.get("reason") or "Those rules could not be understood.")
-                if isinstance(proposal, dict)
-                else "Those rules could not be understood."
-            )
-        else:
-            st.session_state.policy_proposal = proposal
-            st.session_state.notice = ""
-        st.rerun()
-
-    proposal = st.session_state.get("policy_proposal")
-    if not isinstance(proposal, dict):
-        return
-
-    with st.container(border=True):
-        st.markdown("**Review before saving**")
-        for row in _policy_lines(proposal):
-            st.write(f"- {row}")
-        if not _policy_lines(proposal):
-            st.info("No rules were found in that text.")
-
-        clamped = proposal.get("clamped")
-        if isinstance(clamped, list):
-            for notice in clamped:
-                st.warning(str(notice))
-
-        source = "Gemini" if proposal.get("source") == "gemini" else "SafeCart rules"
-        st.caption(f"Read by {source}. Nothing is enforced until you confirm.")
-
-        confirm_col, cancel_col = st.columns(2)
-        with confirm_col:
-            if st.button("Confirm and save rules", key="policy_confirm", type="primary",
-                         use_container_width=True):
-                saved, error = api_client.confirm_policy(proposal.get("policy") or {})
-                if error:
-                    st.session_state.notice = error
-                elif not isinstance(saved, dict) or not saved.get("ok"):
-                    st.session_state.notice = (
-                        str(saved.get("reason") or "The rules could not be saved.")
-                        if isinstance(saved, dict)
-                        else "The rules could not be saved."
-                    )
-                else:
-                    st.session_state.policy_proposal = None
-                    st.session_state.notice = "Your spending rules are now active."
-                st.rerun()
-        with cancel_col:
-            if st.button("Cancel", key="policy_cancel", use_container_width=True):
-                st.session_state.policy_proposal = None
-                st.rerun()
-
-
-def _render_activity_page() -> None:
-    if st.session_state.page != "Activity":
-        return
-    st.markdown('<h1 class="sc-page-title">Activity & Orders</h1>', unsafe_allow_html=True)
-
-    col_hdr, col_btn = st.columns([8, 2], vertical_alignment="center")
-    with col_hdr:
-        st.caption("All orders created and paid through PayPal Sandbox.")
-    with col_btn:
-        if st.button("Refresh", key="refresh_activity", type="secondary", use_container_width=True):
-            st.rerun()
-
-    data, error = _api("GET", "/api/orders")
-    if error:
-        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
-        return
-
-    orders = data.get("orders") if isinstance(data, dict) else []
-    if not orders:
-        st.markdown(
-            '<div class="sc-empty">No orders found yet. Search for products in the '
-            '<strong>Shop</strong> tab and click "Add to Cart" to start checkout.</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    currency = str(st.session_state.status.get("currency") or config.CURRENCY or "USD")
-    for order in orders:
-        _render_order_details(order, str(order.get("currency") or currency), f"Order #{order.get('id')}")
-
-
-def _render_audit_log_page() -> None:
-    if st.session_state.page != "Log":
-        return
-    st.markdown('<h1 class="sc-page-title">Safety & Security Audit Log</h1>', unsafe_allow_html=True)
-
-    col_hdr, col_btn = st.columns([8, 2], vertical_alignment="center")
-    with col_hdr:
-        st.caption("Cryptographic audit trail tracking all safety rule decisions, injection checks, and payments.")
-    with col_btn:
-        if st.button("Refresh", key="refresh_logs", type="secondary", use_container_width=True):
-            st.rerun()
-
-    data, error = _api("GET", "/api/logs")
-    if error:
-        st.markdown(f'<div class="sc-error">{html.escape(error)}</div>', unsafe_allow_html=True)
-        return
-
-    logs = data.get("logs") if isinstance(data, dict) else []
-    if not logs:
-        st.markdown(
-            '<div class="sc-empty">No audit logs recorded yet.</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    for entry in logs:
-        actor = html.escape(str(entry.get("actor") or "system"))
-        action = html.escape(str(entry.get("action") or ""))
-        detail = html.escape(str(entry.get("detail") or ""))
-        ts = html.escape(str(entry.get("ts") or ""))
-        ref = entry.get("ref")
-        ref_text = f" &middot; Ref: <code>{html.escape(str(ref))}</code>" if ref else ""
-
-        badge_color = "#1B3022"
-        badge_bg = "#FFF3D5"
-        if "injection" in action or "blocked" in action:
-            badge_color = "#991B1B"
-            badge_bg = "#FEE2E2"
-        elif actor == "paypal":
-            badge_color = "#1E40AF"
-            badge_bg = "#DBEAFE"
-        elif actor == "guardrail":
-            badge_color = "#92400E"
-            badge_bg = "#FEF3C7"
-
-        st.markdown(
-            '<div style="margin-bottom: 0.75rem; padding: 0.85rem 1.15rem; '
-            'background: #FFFFFF; border: 1px solid #E8DEC5; border-radius: 8px;">'
-            '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">'
-            f'<span><span style="background: {badge_bg}; color: {badge_color}; border-radius: 9999px; '
-            f'padding: 0.15rem 0.55rem; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">'
-            f'{actor}</span> '
-            f'<strong style="margin-left: 0.45rem; font-size: 0.88rem; color: #1B3022;">{action}</strong></span>'
-            f'<span style="font-size: 0.75rem; color: #7C8578;">{ts}</span>'
-            '</div>'
-            f'<div style="font-size: 0.86rem; color: #2D3B2D; line-height: 1.45;">{detail}{ref_text}</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-
 _init_state()
 _handle_paypal_return()
 _refresh_status()
@@ -2411,10 +2200,10 @@ elif st.session_state.page == "Cart":
     _render_cart_page()
 elif st.session_state.page == "Activity":
     _render_notice()
-    _render_activity_page()
+    pages.render_activity_page(_api, config, _render_order_details)
 elif st.session_state.page == "Log":
     _render_notice()
-    _render_audit_log_page()
+    pages.render_audit_log_page(_api)
 else:
     _render_notice()
     st.session_state.page = "Shop"
