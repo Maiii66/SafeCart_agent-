@@ -51,6 +51,13 @@ class RankedProductSchema(ProductSchema):
     ranking: RankingSchema
 
 
+class GuardianReviewSchema(BaseModel):
+    product_id: str
+    risk_level: Literal["low", "medium", "high"]
+    reasons: List[str] = []
+    summary: str
+
+
 class BlockedSchema(BaseModel):
     id: str
     title: str
@@ -73,6 +80,8 @@ class ShopResponse(BaseModel):
     duplicates: int = 0
     explanation: str = ""
     explanation_source: str = "template"
+    guardian_reviews: List[GuardianReviewSchema] = []
+    guardian_status: str = "available"
 
 
 class BasketRequest(StrictRequest):
@@ -125,6 +134,8 @@ class BasketResponse(BaseModel):
     price_difference_cents: int
     explanation: str = ""
     explanation_source: str = "template"
+    guardian_reviews: List[GuardianReviewSchema] = []
+    guardian_status: str = "available"
 
 
 class CandidateRequest(StrictRequest):

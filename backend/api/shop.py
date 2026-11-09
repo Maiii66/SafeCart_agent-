@@ -36,4 +36,9 @@ def shop(req: ShopRequest):
         duplicates=len(outcome.duplicates),
         explanation=explanation,
         explanation_source=explanation_source,
+        guardian_reviews=[
+            {"product_id": product_id, **review}
+            for product_id, review in (outcome.guardian_reviews or {}).items()
+        ],
+        guardian_status="available" if outcome.guardian_available else "unavailable",
     )

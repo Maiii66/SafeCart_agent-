@@ -1119,7 +1119,12 @@ def _add_to_cart(product: dict, source=None) -> None:
     st.session_state.notice = "Added to cart."
 
 
-def _product_card(product: dict, show_cart_button: bool = True) -> None:
+def _product_card(
+    product: dict,
+    show_cart_button: bool = True,
+    guardian_review: dict | None = None,
+    guardian_status: str = "available",
+) -> None:
     ranking = product.get("ranking") if isinstance(product.get("ranking"), dict) else {}
     offer = ranking.get("offer") if isinstance(ranking.get("offer"), dict) else {}
 
@@ -1179,6 +1184,20 @@ def _product_card(product: dict, show_cart_button: bool = True) -> None:
         unsafe_allow_html=True,
     )
 
+    if guardian_status != "available":
+        st.caption("Guardian: AI review unavailable; rule checks apply.")
+    elif isinstance(guardian_review, dict):
+        level = str(guardian_review.get("risk_level") or "low").upper()
+        reasons = guardian_review.get("reasons")
+        reasons = reasons if isinstance(reasons, list) else []
+        summary = str(guardian_review.get("summary") or "")
+        with st.container(border=True):
+            st.markdown(f"**Guardian · {html.escape(level)}**")
+            if summary:
+                st.caption(summary)
+            for reason in reasons[:3]:
+                st.write(f"- {reason}")
+
     if show_cart_button:
         if st.button("Add to Cart 🛒", key=f"add_cart_{product.get('id')}_{domain}", type="secondary"):
             _add_to_cart(product)
@@ -1216,6 +1235,12 @@ def _render_basket_results(data: dict) -> None:
     optimal = data.get("optimal") if isinstance(data.get("optimal"), dict) else {}
     greedy = data.get("greedy") if isinstance(data.get("greedy"), dict) else {}
     chosen = _summary_products(optimal)
+    guardian_reviews = {
+        str(item.get("product_id")): item
+        for item in (data.get("guardian_reviews") or [])
+        if isinstance(item, dict) and item.get("product_id")
+    }
+    guardian_status = str(data.get("guardian_status") or "available")
     total_cents = optimal.get("total_price_cents")
     budget_cents = data.get("total_budget_cents")
 
@@ -1257,7 +1282,12 @@ def _render_basket_results(data: dict) -> None:
 
         for index, product in enumerate(chosen):
             with st.container(border=True):
-                _product_card(product, show_cart_button=False)
+                _product_card(
+                    product,
+                    show_cart_button=False,
+                    guardian_review=guardian_reviews.get(product.get("id")),
+                    guardian_status=guardian_status,
+                )
                 if source and st.button(
                     "Add to Cart 🛒",
                     key=f"basket_add_{index}_{product.get('id')}",
@@ -1330,6 +1360,12 @@ def _render_results() -> None:
     products = response.get("products")
     products = products if isinstance(products, list) else []
     source = html.escape(str(response.get("source") or "catalog"))
+    guardian_reviews = {
+        str(item.get("product_id")): item
+        for item in (response.get("guardian_reviews") or [])
+        if isinstance(item, dict) and item.get("product_id")
+    }
+    guardian_status = str(response.get("guardian_status") or "available")
     meta = f"{len(products)} ranked &middot; {source}"
 
     st.markdown(
@@ -1353,7 +1389,12 @@ def _render_results() -> None:
             if not isinstance(product, dict):
                 continue
             with st.container(border=True):
-                _product_card(product, show_cart_button=True)
+                _product_card(
+                    product,
+                    show_cart_button=True,
+                    guardian_review=guardian_reviews.get(product.get("id")),
+                    guardian_status=guardian_status,
+                )
 
     blocked = response.get("blocked")
     blocked = blocked if isinstance(blocked, list) else []

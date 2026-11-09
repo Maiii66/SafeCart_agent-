@@ -71,6 +71,11 @@ def basket(req: BasketRequest):
         price_difference_cents=outcome.comparison.price_difference_cents,
         explanation=explanation,
         explanation_source=explanation_source,
+        guardian_reviews=[
+            {"product_id": product_id, **review}
+            for product_id, review in (outcome.guardian_reviews or {}).items()
+        ],
+        guardian_status="available" if outcome.guardian_available else "unavailable",
     )
 
 

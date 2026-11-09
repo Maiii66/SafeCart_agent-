@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from backend import guardrails
-from backend.agent import dedupe, injection, optimizer, policy, scoring
+from backend.agent import dedupe, guardian, injection, optimizer, policy, scoring
 from backend.models import Candidate
 from backend.services import catalog
 from database import repository
@@ -28,6 +28,8 @@ class SearchOutcome:
     blocked: tuple
     rejected: tuple
     duplicates: tuple
+    guardian_reviews: dict = None
+    guardian_available: bool = True
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,8 @@ class BasketOutcome:
     total_budget_cents: int
     total_cents: int
     remaining_cents: int
+    guardian_reviews: dict = None
+    guardian_available: bool = True
 
 
 def _is_positive_budget(value):
@@ -80,6 +84,12 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
 
     outliers = scoring.price_outlier_ids(kept)
     prior = scoring.prior_mean_of([item.product for item in kept])
+    rule_flags = {
+        candidate.product.id: ("suspicious_price",)
+        for candidate in kept
+        if candidate.product.id in outliers
+    }
+    guardian_reviews, guardian_available = guardian.review(kept, rule_flags)
 
     ranked = []
     for candidate in kept:
@@ -119,6 +129,8 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
         blocked=tuple(blocked),
         rejected=tuple(filtered.rejected) + tuple(policy_rejected),
         duplicates=tuple(duplicates),
+        guardian_reviews=guardian_reviews,
+        guardian_available=guardian_available,
     )
 
 
@@ -169,9 +181,13 @@ def search_basket(items, total_budget_cents, limit=10, now=None):
     source = "" if mixed_sources else next(iter(sources))
 
     notes = []
+    guardian_reviews = {}
+    guardian_available = True
     for outcome in outcomes:
         if outcome.note and outcome.note not in notes:
             notes.append(outcome.note)
+        guardian_reviews.update(outcome.guardian_reviews or {})
+        guardian_available = guardian_available and outcome.guardian_available
     if mixed_sources:
         notes.append(
             "Items came from different catalog sources, so they cannot be bought together."
@@ -229,4 +245,6 @@ def search_basket(items, total_budget_cents, limit=10, now=None):
         total_budget_cents=total_budget_cents,
         total_cents=total_cents,
         remaining_cents=max(0, total_budget_cents - total_cents),
+        guardian_reviews=guardian_reviews,
+        guardian_available=guardian_available,
     )

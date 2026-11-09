@@ -252,9 +252,9 @@ def test_split_unsafe_separates_good_and_bad_products():
 def test_demo_catalog_has_exactly_one_blocked_product():
     products = catalog_demo.all_products()
     safe, blocked = split_unsafe(products)
-    assert [product.id for product, _reasons in blocked] == ["demo-bud-07"]
+    assert [product.id for product, _reasons in blocked] == ["demo-bud-07", "demo-bud-09"]
     assert len(safe) == 18
-    assert len(blocked) == 1
+    assert len(blocked) == 2
 
 
 def test_channel3_sample_has_no_blocked_products():

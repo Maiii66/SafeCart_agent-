@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from backend import config
-from backend.agent import approvals, checkout, limits, step_up
+from backend.agent import approvals, checkout, injection, limits, step_up
 from backend.models import Candidate, Offer
 from backend.services import catalog, catalog_demo, paypal_service
 from database import connection, repository
@@ -229,6 +229,16 @@ def _unknown_merchant():
     return checkout.execute_checkout(approval.approval_id, now=NOW)
 
 
+def _hostile_demo_listing():
+    product = catalog_demo.get_product("demo-bud-09")
+    if product is None:
+        return False, "hostile demo product is missing"
+    result = injection.scan_product(product)
+    if result.flagged:
+        return True, "listing blocked by the injection guard"
+    return False, "hostile demo product was not flagged"
+
+
 SCENARIOS = [
     ("Normal $14.99 purchase", "ACCEPTED", 1, _normal_purchase),
     ("Replay the same approval", "ALREADY_USED", 1, _replay),
@@ -278,9 +288,14 @@ def run_scenarios():
 
 
 def main():
+    hostile_passed, hostile_reason = _hostile_demo_listing()
+    print(
+        f"Guardian hostile listing scenario: {'PASS' if hostile_passed else 'FAIL'} "
+        f"({hostile_reason})"
+    )
     results = run_scenarios()
     print("SafeCart attack scenarios (no keys, no network)")
-    failed = 0
+    failed = 0 if hostile_passed else 1
     for result in results:
         if result.actual == "ACCEPTED":
             status = "ACCEPTED"

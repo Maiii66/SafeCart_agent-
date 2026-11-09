@@ -21,7 +21,9 @@ ONLY_CHECKOUT = "backend/agent/checkout.py"
 # Modules that make up the payment path. AI-facing code must never import them.
 PAYMENT_PATH_MODULES = {"checkout", "approvals", "step_up", "orders", "limits", "paypal_service"}
 # Files that talk to an AI model or handle voice. (Some of these arrive in a later phase.)
-AI_FACING_FILES = {"voice.py", "llm.py", "understand.py", "explain.py", "policy_parser.py"}
+AI_FACING_FILES = {
+    "voice.py", "llm.py", "understand.py", "explain.py", "policy_parser.py", "guardian.py"
+}
 
 
 # ---------- the detectors (tested below, so we know they really detect) ----------
