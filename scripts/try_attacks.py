@@ -23,10 +23,8 @@ _SETTINGS = {
     "SIGNING_SECRET": "s" * 64,
     "PAYPAL_ENV": "sandbox",
     "STEP_UP_THRESHOLD_CENTS": 2500,
-    "DAILY_CAP_CENTS": 10000,
     "MAX_ORDERS_PER_HOUR": 3,
     "APPROVAL_TTL_SECONDS": 300,
-    "MAX_BUDGET_CENTS": 50000,
     "TRUSTED_MERCHANTS": ("demo-shop.example", "budget-store.example"),
 }
 
@@ -65,6 +63,9 @@ class _FakePayPal:
         return paypal_service.CaptureResult(order_id, "COMPLETED", "ATTACK-CAP",
                                             self._last_total)
 
+    def get_order(self, order_id):
+        raise paypal_service.PayPalError("status unavailable")
+
 
 @contextmanager
 def fresh_world():
@@ -72,6 +73,7 @@ def fresh_world():
     saved_settings = {name: getattr(config, name) for name in _SETTINGS}
     saved_create = paypal_service.create_order
     saved_capture = paypal_service.capture_order
+    saved_get_order = paypal_service.get_order
     saved_live_product = catalog.get_live_product
     fake = _FakePayPal()
     temp_dir = tempfile.mkdtemp(prefix="safecart_attacks_")
@@ -81,6 +83,7 @@ def fresh_world():
             setattr(config, name, value)
         paypal_service.create_order = fake.create_order
         paypal_service.capture_order = fake.capture_order
+        paypal_service.get_order = fake.get_order
         catalog_demo.clear_price_drift()
         connection.init_db()
         yield fake
@@ -91,6 +94,7 @@ def fresh_world():
             setattr(config, name, value)
         paypal_service.create_order = saved_create
         paypal_service.capture_order = saved_capture
+        paypal_service.get_order = saved_get_order
         catalog.get_live_product = saved_live_product
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -175,7 +179,8 @@ def _price_unverifiable():
 
 def _daily_cap():
     approval = _approve("demo-bud-04")
-    repository.insert_order("cap-setup", "PP-CAP", "CAPTURED", 9000, NOW)
+    already_spent = max(config.DAILY_CAP_CENTS - 1000, 0)
+    repository.insert_order("cap-setup", "PP-CAP", "CAPTURED", already_spent, NOW)
     return checkout.execute_checkout(approval.approval_id, now=NOW)
 
 

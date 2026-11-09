@@ -110,3 +110,19 @@ def test_update_only_applies_when_the_expected_status_matches():
     assert repository.update_order_status(order_id, "CAPTURED", expected_status="CREATED") == 1
     assert repository.update_order_status(order_id, "FAILED", expected_status="CREATED") == 0
     assert status_of(order_id) == "CAPTURED"
+
+
+def test_an_order_can_be_found_by_its_paypal_id():
+    order_id = repository.insert_order("appr", "PP-LOOKUP", "CREATED", 3999, NOW)
+    found = repository.get_order_by_paypal_id("PP-LOOKUP")
+    assert found["id"] == order_id
+    assert repository.get_order_by_paypal_id("PP-MISSING") is None
+    assert repository.get_order_by_paypal_id("  ") is None
+    assert repository.get_order_by_paypal_id(None) is None
+
+
+def test_the_latest_order_wins_when_a_paypal_id_repeats():
+    first = repository.insert_order("appr", "PP-DUP", "FAILED", 3999, NOW)
+    second = repository.insert_order("appr2", "PP-DUP", "CREATED", 3999, NOW + 1)
+    assert repository.get_order_by_paypal_id("PP-DUP")["id"] == second
+    assert repository.get_order_by_paypal_id("PP-DUP")["id"] != first

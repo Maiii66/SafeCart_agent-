@@ -30,6 +30,9 @@ class FakePayPal:
         self.capture_amount = None            # None means "exactly the order total"
         self.approval_was_used_when_called = None
         self._last_total = 0
+        self.get_order_calls = []
+        self.get_order_info = None
+        self.get_order_error = paypal_service.PayPalError("status unavailable")
 
     def create_order(self, items, idempotency_key, reference_id="safecart-order"):
         approval = repository.get_approval(idempotency_key)
@@ -49,12 +52,19 @@ class FakePayPal:
         amount = self._last_total if self.capture_amount is None else self.capture_amount
         return paypal_service.CaptureResult(order_id, self.capture_status, "CAP-1", amount)
 
+    def get_order(self, order_id):
+        self.get_order_calls.append(order_id)
+        if self.get_order_error:
+            raise self.get_order_error
+        return self.get_order_info
+
 
 @pytest.fixture
 def paypal(monkeypatch):
     fake = FakePayPal()
     monkeypatch.setattr(paypal_service, "create_order", fake.create_order)
     monkeypatch.setattr(paypal_service, "capture_order", fake.capture_order)
+    monkeypatch.setattr(paypal_service, "get_order", fake.get_order)
     return fake
 
 
@@ -378,6 +388,45 @@ def test_another_paypal_error_keeps_the_order_open_for_a_retry(paypal):
     result = checkout.complete_order(order_id, now=NOW + 5)
     assert not result.ok and result.code == "CAPTURE_FAILED"
     assert status_of(order_id) == "CREATED"
+
+
+def test_an_uncertain_capture_that_paypal_completed_is_reconciled_without_recapturing(paypal):
+    order_id = created_order(paypal)
+    paypal.capture_error = paypal_service.PayPalError("timeout")
+    paypal.get_order_error = None
+    paypal.get_order_info = paypal_service.OrderInfo(
+        "PP-ORDER-1", "COMPLETED", capture_id="CAP-RECONCILED", amount_cents=1499
+    )
+    result = checkout.complete_order(order_id, now=NOW + 5)
+    assert result.ok and result.code == "CAPTURED"
+    assert len(paypal.capture_calls) == 1
+    assert paypal.get_order_calls == ["PP-ORDER-1"]
+    order = repository.get_order(order_id)
+    assert (order["status"], order["capture_id"]) == ("CAPTURED", "CAP-RECONCILED")
+    assert any(row["action"] == "order_reconciled" for row in repository.list_logs())
+
+
+def test_an_uncertain_capture_that_paypal_voided_fails_the_order(paypal):
+    order_id = created_order(paypal)
+    paypal.capture_error = paypal_service.PayPalError("timeout")
+    paypal.get_order_error = None
+    paypal.get_order_info = paypal_service.OrderInfo("PP-ORDER-1", "VOIDED")
+    result = checkout.complete_order(order_id, now=NOW + 5)
+    assert not result.ok and result.code == "CAPTURE_FAILED"
+    assert len(paypal.capture_calls) == 1
+    order = repository.get_order(order_id)
+    assert order["status"] == "FAILED" and "VOIDED" in order["note"]
+
+
+def test_an_uncertain_capture_stays_open_while_paypal_is_not_finished(paypal):
+    order_id = created_order(paypal)
+    paypal.capture_error = paypal_service.PayPalError("timeout")
+    paypal.get_order_error = None
+    paypal.get_order_info = paypal_service.OrderInfo("PP-ORDER-1", "APPROVED")
+    result = checkout.complete_order(order_id, now=NOW + 5)
+    assert not result.ok and result.code == "CAPTURE_FAILED"
+    assert status_of(order_id) == "CREATED"
+    assert paypal.get_order_calls == ["PP-ORDER-1"]
 
 
 def test_a_capture_that_is_not_completed_fails_the_order(paypal):

@@ -99,6 +99,39 @@ def test_capture_reads_result_and_sends_same_key(fake_http):
     assert (result.status, result.capture_id, result.amount_cents) == ("COMPLETED", "CAP999", 3999)
 
 
+def test_return_and_cancel_urls_carry_markers(fake_http, monkeypatch):
+    monkeypatch.setattr(config, "PAYPAL_RETURN_URL", "http://localhost:8501/?keep=1")
+    monkeypatch.setattr(config, "PAYPAL_CANCEL_URL", "http://localhost:8501/cancel")
+    fake_http.respond(make_handler())
+    pp.create_order(ITEMS, "k1")
+    context = fake_http.calls[1]["json"]["payment_source"]["paypal"]["experience_context"]
+    assert context["return_url"] == "http://localhost:8501/?keep=1&paypal_return=1"
+    assert context["cancel_url"] == "http://localhost:8501/cancel?paypal_cancel=1"
+
+
+def test_get_order_reads_the_remote_status_and_capture(fake_http):
+    fake_http.respond(make_handler(order_reply=FakeResponse(200, {
+        "id": "ORDER123456",
+        "status": "COMPLETED",
+        "links": [{"rel": "payer-action", "href": "https://sandbox.paypal.com/x"}],
+        "purchase_units": [{"payments": {"captures": [
+            {"id": "CAP999", "amount": {"currency_code": "USD", "value": "39.99"}}]}}],
+    })))
+    info = pp.get_order("ORDER123456")
+    call = fake_http.calls[1]
+    assert call["method"] == "GET"
+    assert call["url"].endswith("/v2/checkout/orders/ORDER123456")
+    assert info == pp.OrderInfo("ORDER123456", "COMPLETED",
+                                "https://sandbox.paypal.com/x", "CAP999", 3999)
+
+
+def test_get_order_rejects_weird_order_ids(fake_http):
+    for bad in ["../x", "a b", "", "x" * 80, None]:
+        with pytest.raises(pp.PayPalError):
+            pp.get_order(bad)
+    assert fake_http.calls == []
+
+
 def test_capture_rejects_weird_order_ids(fake_http):
     for bad in ["../x", "a b", "", "x" * 80, None]:
         with pytest.raises(pp.PayPalError):

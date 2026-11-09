@@ -98,6 +98,21 @@ def get_order(order_id):
         conn.close()
 
 
+def get_order_by_paypal_id(paypal_order_id):
+    if not isinstance(paypal_order_id, str) or not paypal_order_id.strip():
+        return None
+    connection.init_db()
+    conn = connection.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM orders WHERE paypal_order_id = ? ORDER BY id DESC LIMIT 1",
+            (paypal_order_id.strip(),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def list_orders(limit=200):
     connection.init_db()
     conn = connection.get_connection()

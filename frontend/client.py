@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import quote
 
 import requests
@@ -128,6 +129,27 @@ def get_order(order_id):
     if not order_text:
         return None, "The order identifier is missing."
     return api_request("GET", f"/api/orders/{order_text}")
+
+
+def _paypal_order_id_text(paypal_order_id):
+    text = str(paypal_order_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9_-]{5,64}$", text):
+        return ""
+    return text
+
+
+def get_order_by_paypal(paypal_order_id):
+    order_text = _paypal_order_id_text(paypal_order_id)
+    if not order_text:
+        return None, "The PayPal order identifier is missing."
+    return api_request("GET", f"/api/orders/by-paypal/{quote(order_text, safe='')}")
+
+
+def cancel_order(order_id):
+    order_text = _order_id_text(order_id)
+    if not order_text:
+        return None, "The order identifier is missing."
+    return api_request("POST", f"/api/orders/{order_text}/cancel", {}, timeout=PAYMENT_TIMEOUT_SECONDS)
 
 
 def complete_order(order_id):

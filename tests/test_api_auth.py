@@ -27,6 +27,7 @@ PROTECTED = [
     ("POST", "/api/checkout", {"approval_id": "abc"}),
     ("GET", "/api/orders", None),
     ("GET", "/api/orders/1", None),
+    ("GET", "/api/orders/by-paypal/PP-1", None),
     ("POST", "/api/orders/1/complete", None),
     ("POST", "/api/orders/1/cancel", None),
     ("GET", "/api/logs", None),
@@ -38,6 +39,7 @@ PROTECTED = [
 PARAM_TEMPLATES = {
     "/api/approvals/abc/step-up": "/api/approvals/{approval_id}/step-up",
     "/api/orders/1": "/api/orders/{order_id}",
+    "/api/orders/by-paypal/PP-1": "/api/orders/by-paypal/{paypal_order_id}",
     "/api/orders/1/complete": "/api/orders/{order_id}/complete",
     "/api/orders/1/cancel": "/api/orders/{order_id}/cancel",
 }

@@ -379,3 +379,80 @@ def test_complete_order_rejects_bad_ids(fake_http):
     assert data is None
     assert "identifier is missing" in error
     assert fake_http.calls == []
+
+
+def test_get_order_by_paypal_uses_the_lookup_route(fake_http):
+    fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"id": 12}))
+    data, error = api_client.get_order_by_paypal("PP-ORDER-1")
+    assert error == ""
+    assert data == {"id": 12}
+    assert fake_http.calls[0]["method"] == "GET"
+    assert fake_http.calls[0]["url"].endswith("/api/orders/by-paypal/PP-ORDER-1")
+
+
+@pytest.mark.parametrize(
+    "token", [None, "", "   ", "bad token", "../x", "x" * 80, 12]
+)
+def test_get_order_by_paypal_rejects_bad_tokens_without_a_request(fake_http, token):
+    data, error = api_client.get_order_by_paypal(token)
+    assert data is None
+    assert "identifier is missing" in error
+    assert fake_http.calls == []
+
+
+def test_cancel_order_posts_to_the_cancel_route(fake_http):
+    fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"ok": True}))
+    data, error = api_client.cancel_order(12)
+    assert error == ""
+    assert data == {"ok": True}
+    call = fake_http.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/orders/12/cancel")
+    assert call["timeout"] == api_client.PAYMENT_TIMEOUT_SECONDS
+
+
+# ---------- return and cancel redirects ----------
+
+
+def test_a_paypal_return_redirect_is_recognised():
+    params = {"token": "PP-ORDER-1", "PayerID": "PAYER1"}
+    assert flow.is_paypal_return(params) is True
+    assert flow.paypal_return_token(params) == "PP-ORDER-1"
+    assert flow.is_paypal_cancel(params) is False
+
+
+def test_the_return_marker_alone_is_enough():
+    params = {"paypal_return": "1", "token": "PP-ORDER-1"}
+    assert flow.paypal_return_token(params) == "PP-ORDER-1"
+    assert flow.is_paypal_cancel(params) is False
+
+
+def test_a_paypal_cancel_redirect_is_recognised():
+    params = {"paypal_cancel": "1", "token": "PP-ORDER-1"}
+    assert flow.is_paypal_cancel(params) is True
+    assert flow.paypal_cancel_token(params) == "PP-ORDER-1"
+    assert flow.is_paypal_return(params) is False
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        {},
+        {"token": "bad token", "PayerID": "PAYER1"},
+        {"token": "tiny", "PayerID": "PAYER1"},
+        {"token": "", "paypal_return": "1"},
+        {"paypal_return": "0", "token": "PP-ORDER-1"},
+        {"paypal_cancel": "1"},
+    ],
+)
+def test_incomplete_redirects_are_ignored(params):
+    assert flow.is_paypal_return(params) is False
+    assert flow.is_paypal_cancel(params) is False
+    assert flow.paypal_return_token(params) == ""
+    assert flow.paypal_cancel_token(params) == ""
+
+
+def test_query_values_may_arrive_as_lists():
+    params = {"token": ["PP-ORDER-1"], "PayerID": ["PAYER1"]}
+    assert flow.paypal_return_token(params) == "PP-ORDER-1"

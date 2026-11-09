@@ -42,9 +42,27 @@ class VoiceResult:
     action: str = "readback"
 
 
+_TRANSCRIPTION_REASONS = {
+    "LLM_AUTH": "Speech-to-text is not configured correctly.",
+    "LLM_BAD_MODEL": "The speech-to-text model is not available.",
+    "LLM_BAD_REQUEST": "The speech-to-text service rejected the audio.",
+    "LLM_RATE_LIMIT": "Speech-to-text is busy. Try again in a moment.",
+    "LLM_SERVER": "Speech-to-text had a server error. Try again.",
+    "LLM_TIMEOUT": "Speech-to-text took too long. Try again.",
+    "LLM_BAD_AUDIO": "The audio could not be read. Try recording again.",
+    "LLM_FAILED": "Speech-to-text could not process the audio.",
+}
+
+
 def _refuse(code, reason, **fields):
     fields.setdefault("requires_confirmation", False)
     return VoiceResult(ok=False, code=code, reason=reason, **fields)
+
+
+def _safe_transcription_reason(code):
+    return _TRANSCRIPTION_REASONS.get(
+        str(code or ""), "Speech-to-text could not process the audio."
+    )
 
 
 def estimate_duration_seconds(audio_bytes):
@@ -148,11 +166,21 @@ def transcribe_clip(clip, transcribe=None):
     try:
         transcript = transcribe(bytes(data), mime_type=clip.mime_type)
     except Exception as error:
-        return _refuse("TRANSCRIPTION_FAILED", str(error))
+        code = str(getattr(error, "code", "") or "")
+        if code == "TRANSCRIPTION_UNAVAILABLE":
+            return _refuse(
+                "TRANSCRIPTION_UNAVAILABLE",
+                "No speech-to-text service is configured.",
+            )
+        if code == "LLM_EMPTY":
+            return _refuse("NO_SPEECH", "I did not hear any speech.")
+        return _refuse("TRANSCRIPTION_FAILED", _safe_transcription_reason(code))
     finally:
         # Drop our reference now. Nothing in this module stores or writes the audio.
         data = b""
 
+    if not isinstance(transcript, str) or not transcript.strip():
+        return _refuse("NO_SPEECH", "I did not hear any speech.")
     return _proposal_from_transcript(transcript)
 
 

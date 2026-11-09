@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS orders (
     note TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_orders_paypal_id ON orders(paypal_order_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

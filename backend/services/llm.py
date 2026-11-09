@@ -53,6 +53,37 @@ _TRANSCRIBE_PROMPT = (
     "with no commentary, labels, or instructions."
 )
 
+_SAFE_MESSAGES = {
+    "TRANSCRIPTION_UNAVAILABLE": "No speech-to-text service is configured.",
+    "LLM_UNAVAILABLE": "Gemini is not configured.",
+    "LLM_AUTH": "The Gemini API key was rejected.",
+    "LLM_BAD_MODEL": "The configured Gemini model is not available.",
+    "LLM_BAD_REQUEST": "Gemini rejected the request.",
+    "LLM_RATE_LIMIT": "Gemini is busy. Try again shortly.",
+    "LLM_SERVER": "Gemini had a server error. Try again shortly.",
+    "LLM_TIMEOUT": "Gemini did not respond in time.",
+    "LLM_BAD_AUDIO": "The audio clip could not be read.",
+    "LLM_EMPTY": "I did not hear any speech.",
+    "LLM_FAILED": "Gemini could not process the request.",
+}
+
+
+class LLMError(Exception):
+    """A safe, structured Gemini failure. Its text never contains keys or raw SDK errors."""
+
+    def __init__(self, code, message=None):
+        self.code = str(code or "LLM_FAILED")
+        self.message = message or _SAFE_MESSAGES.get(self.code, _SAFE_MESSAGES["LLM_FAILED"])
+        super().__init__(self.message)
+
+    def __str__(self):
+        return self.message
+
+
+def safe_message(code):
+    return _SAFE_MESSAGES.get(str(code or ""), _SAFE_MESSAGES["LLM_FAILED"])
+
+
 _client_lock = threading.Lock()
 _client_cache = {"key": None, "client": None}
 
@@ -101,6 +132,75 @@ def _generate(contents, *, timeout_ms=8000, **config_fields):
         )
     except Exception:
         return None
+
+
+def _classify_error(error):
+    """Map a Gemini/transport exception to a safe code without exposing its text."""
+    numeric = None
+    for value in (getattr(error, "code", None), getattr(error, "status", None)):
+        if isinstance(value, int) and not isinstance(value, bool):
+            numeric = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            numeric = int(value.strip())
+        if numeric is not None:
+            break
+
+    if numeric is not None:
+        if numeric in (401, 403):
+            return "LLM_AUTH"
+        if numeric == 404:
+            return "LLM_BAD_MODEL"
+        if numeric == 429:
+            return "LLM_RATE_LIMIT"
+        if 500 <= numeric < 600:
+            return "LLM_SERVER"
+        if 400 <= numeric < 500:
+            return "LLM_BAD_REQUEST"
+
+    labels = " ".join(
+        str(value or "").upper()
+        for value in (getattr(error, "code", None), getattr(error, "status", None))
+    )
+    for needle, code in (
+        ("UNAUTHENTICATED", "LLM_AUTH"),
+        ("PERMISSION_DENIED", "LLM_AUTH"),
+        ("FORBIDDEN", "LLM_AUTH"),
+        ("NOT_FOUND", "LLM_BAD_MODEL"),
+        ("RESOURCE_EXHAUSTED", "LLM_RATE_LIMIT"),
+        ("RATE_LIMIT", "LLM_RATE_LIMIT"),
+        ("UNAVAILABLE", "LLM_SERVER"),
+        ("INTERNAL", "LLM_SERVER"),
+        ("INVALID_ARGUMENT", "LLM_BAD_REQUEST"),
+        ("FAILED_PRECONDITION", "LLM_BAD_REQUEST"),
+    ):
+        if needle in labels:
+            return code
+
+    name = type(error).__name__.lower()
+    if "timeout" in name or "deadline" in name:
+        return "LLM_TIMEOUT"
+    if "connection" in name or "network" in name:
+        return "LLM_SERVER"
+    return "LLM_FAILED"
+
+
+def _generate_strict(contents, *, timeout_ms=8000, **config_fields):
+    """Like _generate, but raises a safe LLMError instead of hiding what went wrong."""
+    client = _client()
+    if client is None or types is None:
+        raise LLMError("LLM_UNAVAILABLE")
+    try:
+        request_config = types.GenerateContentConfig(
+            http_options=_http_options(timeout_ms),
+            **config_fields,
+        )
+        return client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=contents,
+            config=request_config,
+        )
+    except Exception as error:
+        raise LLMError(_classify_error(error)) from None
 
 
 def _response_dict(response):
@@ -187,3 +287,38 @@ def transcribe_audio(audio_bytes, mime_type="audio/wav"):
         return None
     text = text.strip()
     return text or None
+
+
+def transcribe_audio_checked(audio_bytes, mime_type="audio/wav"):
+    """Transcribe one short clip or raise LLMError with a safe, specific code."""
+    if not isinstance(audio_bytes, (bytes, bytearray)) or not audio_bytes:
+        raise LLMError("LLM_BAD_AUDIO", "The audio clip was empty.")
+    if not available():
+        raise LLMError("TRANSCRIPTION_UNAVAILABLE")
+    if types is None:  # pragma: no cover - available() already checks this
+        raise LLMError("TRANSCRIPTION_UNAVAILABLE")
+
+    mime = mime_type if isinstance(mime_type, str) and mime_type.strip() else "audio/wav"
+    mime = mime.strip()
+    if not mime.lower().startswith("audio/"):
+        mime = "audio/wav"
+    try:
+        part = types.Part.from_bytes(data=bytes(audio_bytes), mime_type=mime)
+    except Exception:
+        raise LLMError("LLM_BAD_AUDIO") from None
+
+    try:
+        response = _generate_strict(
+            [_TRANSCRIBE_PROMPT, part],
+            timeout_ms=15000,
+            temperature=0,
+            max_output_tokens=300,
+        )
+    except LLMError:
+        raise
+    except Exception as error:
+        raise LLMError(_classify_error(error)) from None
+    text = getattr(response, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        raise LLMError("LLM_EMPTY")
+    return text.strip()

@@ -50,7 +50,7 @@ This section describes the finished flow. The AI and screens are built and teste
 4. Python removes anything over budget or suspicious.
 5. The agent ranks the rest and explains its top picks.
 6. You click **Approve**.
-7. The app re-checks the live price, then creates and captures a **PayPal sandbox order**.
+7. The app re-checks the live price and creates a **PayPal sandbox order**. After you approve on PayPal, SafeCart captures it automatically when you return to the app.
 8. Every decision is saved in an audit log.
 
 ### Smart basket
@@ -149,7 +149,7 @@ Real output: `All 15 scenarios behaved exactly as expected.` (exit code 0).
 | 14 | Right typed confirmation (39.99) | ACCEPTED | 1 |
 | 15 | Unknown merchant (evilbestbuy.com) | REFUSED (STEP_UP_REQUIRED) | 0 |
 
-The architecture test in `tests/test_architecture.py` reads the source with Python's `ast` module and proves that only `backend/agent/checkout.py` calls `paypal_service.create_order` or `paypal_service.capture_order`, and that only `checkout.py` imports `paypal_service`. The full suite passed **993 tests at the time of writing**.
+The architecture test in `tests/test_architecture.py` reads the source with Python's `ast` module and proves that only `backend/agent/checkout.py` calls `paypal_service.create_order` or `paypal_service.capture_order`, and that only `checkout.py` imports `paypal_service`. The full suite passed **1061 tests at the time of writing**.
 
 ---
 
@@ -284,9 +284,9 @@ PAYPAL_RETURN_URL=http://localhost:8501
 # ---------- Safety rules (dollars) ----------
 SIGNING_SECRET=             # python -c "import secrets; print(secrets.token_hex(32))"
 APPROVAL_TTL_SECONDS=300
-MAX_BUDGET=500              # largest budget a single request may set
+MAX_BUDGET=2000             # largest budget a single request may set
 STEP_UP_THRESHOLD=25
-DAILY_CAP=100
+DAILY_CAP=500
 MAX_ORDERS_PER_HOUR=3
 
 # ---------- API access ----------
@@ -475,7 +475,7 @@ SafeCart/
 python -m pytest -q
 ```
 
-**993 passed at the time of writing.**
+**1061 passed at the time of writing.**
 
 What the tests cover:
 

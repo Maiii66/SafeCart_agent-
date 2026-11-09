@@ -142,6 +142,56 @@ def _move(order, new_status, **fields):
     return None
 
 
+def _finalize_captured(order, capture, now, reconciled=False):
+    """Move a CREATED order to CAPTURED after PayPal confirms the money moved."""
+    ref = str(order["id"])
+    note = None
+    if capture.amount_cents != order["total_cents"]:
+        note = (f"AMOUNT MISMATCH: PayPal reports {format_usd(capture.amount_cents)}, "
+                f"expected {format_usd(order['total_cents'])}")
+    failure = _move(order, "CAPTURED", captured_at=int(now), capture_id=capture.capture_id or None, note=note)
+    if failure:
+        return failure
+    if note:
+        repository.add_log("guardrail", "capture_amount_mismatch", note, ref)
+    if reconciled:
+        repository.add_log("agent", "order_reconciled",
+                           f"Reconciled order {order['id']} as captured from PayPal status", ref)
+    else:
+        repository.add_log("agent", "order_captured", f"Captured order {order['id']}", ref)
+    return CheckoutResult(ok=True, code="CAPTURED", reason="Payment captured.", order_id=order["id"])
+
+
+def _reconcile_after_capture_failure(order, now):
+    """After an ambiguous capture failure, ask PayPal what really happened.
+
+    Returns a finished CheckoutResult when PayPal already completed or killed the order,
+    or None when the order should stay CREATED for another attempt.
+    """
+    ref = str(order["id"])
+    try:
+        remote = paypal_service.get_order(order["paypal_order_id"])
+    except paypal_service.PayPalError:
+        repository.add_log("agent", "order_status_unavailable",
+                           "Could not check PayPal after an uncertain capture", ref)
+        return None
+
+    status = str(remote.status or "").upper()
+    if status == "COMPLETED":
+        capture = paypal_service.CaptureResult(
+            remote.order_id, remote.status, remote.capture_id, remote.amount_cents
+        )
+        return _finalize_captured(order, capture, now, reconciled=True)
+    if status in ("VOIDED", "EXPIRED", "CANCELLED"):
+        note = f"PayPal order status: {status}"
+        failure = _move(order, "FAILED", note=note)
+        if failure:
+            return failure
+        repository.add_log("agent", "order_failed", note, ref)
+        return CheckoutResult(ok=False, code="CAPTURE_FAILED", order_id=order["id"], reason=note)
+    return None
+
+
 def complete_order(order_id, now=None):
     """Take the money, after the buyer approved the order on PayPal."""
     now = time.time() if now is None else now
@@ -163,6 +213,9 @@ def complete_order(order_id, now=None):
             repository.add_log("agent", "order_waiting_approval", "The buyer has not approved on PayPal yet", ref)
             return CheckoutResult(ok=False, code="WAITING_APPROVAL", order_id=order["id"],
                                   reason="Waiting for the buyer to approve the payment on PayPal.")
+        reconciled = _reconcile_after_capture_failure(order, now)
+        if reconciled is not None:
+            return reconciled
         repository.add_log("agent", "order_capture_failed", str(error), ref)
         return CheckoutResult(ok=False, code="CAPTURE_FAILED", order_id=order["id"], reason=str(error))
 
@@ -174,18 +227,7 @@ def complete_order(order_id, now=None):
         repository.add_log("agent", "order_failed", note, ref)
         return CheckoutResult(ok=False, code="CAPTURE_FAILED", order_id=order["id"], reason=note)
 
-    # The money moved. It must be exactly what was approved: if not, say so loudly.
-    note = None
-    if capture.amount_cents != order["total_cents"]:
-        note = (f"AMOUNT MISMATCH: PayPal reports {format_usd(capture.amount_cents)}, "
-                f"expected {format_usd(order['total_cents'])}")
-    failure = _move(order, "CAPTURED", captured_at=int(now), capture_id=capture.capture_id or None, note=note)
-    if failure:
-        return failure
-    if note:
-        repository.add_log("guardrail", "capture_amount_mismatch", note, ref)
-    repository.add_log("agent", "order_captured", f"Captured order {order['id']}", ref)
-    return CheckoutResult(ok=True, code="CAPTURED", reason="Payment captured.", order_id=order["id"])
+    return _finalize_captured(order, capture, now)
 
 
 def cancel_order(order_id):

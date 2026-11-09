@@ -5,11 +5,12 @@
 import re
 import time
 from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
 from backend import config
-from backend.money import MoneyError, to_dollars_str
+from backend.money import MoneyError, parse_dollars_to_cents, to_dollars_str
 
 TIMEOUT = 20
 MAX_QUANTITY = 10
@@ -45,6 +46,15 @@ class CaptureResult:
     status: str
     capture_id: str
     amount_cents: int
+
+
+@dataclass(frozen=True)
+class OrderInfo:
+    order_id: str
+    status: str
+    approve_url: str = ""
+    capture_id: str = ""
+    amount_cents: int = 0
 
 
 # ---------- plumbing ----------
@@ -117,6 +127,20 @@ def _clean_id(value, fallback):
     return cleaned or fallback
 
 
+def _with_marker(url, key):
+    """Add one query marker to a configured URL without losing its existing query."""
+    base = str(url or "").strip() or "http://localhost:8501"
+    try:
+        parts = urlsplit(base)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query[key] = "1"
+        return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                           urlencode(query), parts.fragment))
+    except (TypeError, ValueError):
+        separator = "&" if "?" in base else "?"
+        return f"{base}{separator}{key}=1"
+
+
 def build_order_body(items, reference_id):
     """Returns (body, total_cents). Refuses anything that does not look like a sane order."""
     if not items:
@@ -148,14 +172,45 @@ def build_order_body(items, reference_id):
             "brand_name": "SafeCart",
             "shipping_preference": "NO_SHIPPING",
             "user_action": "PAY_NOW",
-            "return_url": config.PAYPAL_RETURN_URL,
-            "cancel_url": config.PAYPAL_RETURN_URL,
+            "return_url": _with_marker(config.PAYPAL_RETURN_URL, "paypal_return"),
+            "cancel_url": _with_marker(config.PAYPAL_CANCEL_URL, "paypal_cancel"),
         }}},
     }
     return body, total
 
 
 # ---------- calls ----------
+
+def _capture_details(data):
+    """Return (capture_id, amount_cents) when PayPal includes a capture, else ('', 0)."""
+    try:
+        capture = data["purchase_units"][0]["payments"]["captures"][0]
+        capture_id = str(capture.get("id", ""))
+        amount_cents = parse_dollars_to_cents(capture["amount"]["value"])
+        return capture_id, amount_cents
+    except (KeyError, IndexError, TypeError, MoneyError):
+        return "", 0
+
+
+def _order_info(data, fallback_id):
+    links = {link.get("rel"): link.get("href") for link in data.get("links", [])}
+    capture_id, amount_cents = _capture_details(data)
+    return OrderInfo(
+        order_id=str(data.get("id", fallback_id)),
+        status=str(data.get("status", "")),
+        approve_url=links.get("payer-action") or links.get("approve") or "",
+        capture_id=capture_id,
+        amount_cents=amount_cents,
+    )
+
+
+def get_order(order_id):
+    """Read one PayPal order so an uncertain capture can be reconciled safely."""
+    if not re.match(r"^[A-Za-z0-9_-]{5,64}$", str(order_id)):
+        raise PayPalError("That is not a valid PayPal order id.")
+    data = _call("GET", f"/v2/checkout/orders/{order_id}")
+    return _order_info(data, order_id)
+
 
 def create_order(items, idempotency_key, reference_id="safecart-order"):
     """Create a PayPal order. The buyer must still approve it on PayPal (approve_url)."""
@@ -176,13 +231,6 @@ def capture_order(order_id, idempotency_key):
         raise PayPalError("That is not a valid PayPal order id.")
     data = _call("POST", f"/v2/checkout/orders/{order_id}/capture", json={},
                  request_id=_clean_id(idempotency_key, "") or None)
-    capture_id, amount_cents = "", 0
-    try:
-        capture = data["purchase_units"][0]["payments"]["captures"][0]
-        capture_id = str(capture.get("id", ""))
-        from backend.money import parse_dollars_to_cents
-        amount_cents = parse_dollars_to_cents(capture["amount"]["value"])
-    except (KeyError, IndexError, TypeError, MoneyError):
-        pass
+    capture_id, amount_cents = _capture_details(data)
     return CaptureResult(order_id=str(data.get("id", order_id)), status=str(data.get("status", "")),
                          capture_id=capture_id, amount_cents=amount_cents)

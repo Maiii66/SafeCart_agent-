@@ -60,15 +60,16 @@ PAYPAL_CLIENT_SECRET = _text("PAYPAL_CLIENT_SECRET")
 PAYPAL_BASE_URL = ("https://api-m.paypal.com" if PAYPAL_ENV == "live"
                    else "https://api-m.sandbox.paypal.com")
 PAYPAL_RETURN_URL = _text("PAYPAL_RETURN_URL", "http://localhost:8501")
+PAYPAL_CANCEL_URL = _text("PAYPAL_CANCEL_URL", PAYPAL_RETURN_URL)
 # The only currency the agent will ever spend in. Offers in any other currency are refused.
 CURRENCY = (_text("PAYPAL_CURRENCY", "USD") or "USD").upper()
 
 # ---------- Safety rules (money in cents) ----------
 SIGNING_SECRET = _text("SIGNING_SECRET")
 APPROVAL_TTL_SECONDS = _int("APPROVAL_TTL_SECONDS", 300)
-MAX_BUDGET_CENTS = _cents("MAX_BUDGET", 500)
+MAX_BUDGET_CENTS = _cents("MAX_BUDGET", 2000)
 STEP_UP_THRESHOLD_CENTS = _cents("STEP_UP_THRESHOLD", 25)
-DAILY_CAP_CENTS = _cents("DAILY_CAP", 100)
+DAILY_CAP_CENTS = _cents("DAILY_CAP", 500)
 MAX_ORDERS_PER_HOUR = _int("MAX_ORDERS_PER_HOUR", 3)
 
 # ---------- Trusted merchants ----------

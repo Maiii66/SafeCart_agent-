@@ -364,7 +364,10 @@ class FakePayPalFull:
     def __init__(self):
         self.create_calls = []
         self.capture_calls = []
+        self.get_order_calls = []
         self.capture_error = None
+        self.get_order_error = paypal_service.PayPalError("status unavailable")
+        self.get_order_info = None
         self._last_total = 0
 
     def create_order(self, items, idempotency_key, reference_id="safecart-order"):
@@ -393,12 +396,19 @@ class FakePayPalFull:
             order_id, "COMPLETED", "CAP-API-1", 1499
         )
 
+    def get_order(self, order_id):
+        self.get_order_calls.append(order_id)
+        if self.get_order_error:
+            raise self.get_order_error
+        return self.get_order_info
+
 
 @pytest.fixture
 def paypal_full(monkeypatch):
     fake = FakePayPalFull()
     monkeypatch.setattr(paypal_service, "create_order", fake.create_order)
     monkeypatch.setattr(paypal_service, "capture_order", fake.capture_order)
+    monkeypatch.setattr(paypal_service, "get_order", fake.get_order)
     return fake
 
 
@@ -652,6 +662,21 @@ def test_complete_waits_for_buyer_approval(client, paypal_full):
     assert response.json()["code"] == "WAITING_APPROVAL"
     detail = client.get(f"/api/orders/{created['order_id']}")
     assert detail.json()["status"] == "CREATED"
+
+
+def test_an_order_can_be_fetched_by_its_paypal_id(client, paypal_full):
+    approval = approve(client, [BUD], 5000)
+    created = client.post(
+        "/api/checkout", json={"approval_id": approval["approval_id"]}
+    ).json()
+
+    response = client.get("/api/orders/by-paypal/PP-API-FULL")
+    assert response.status_code == 200
+    assert response.json()["id"] == created["order_id"]
+    assert response.json()["status"] == "CREATED"
+
+    assert client.get("/api/orders/by-paypal/PP-MISSING").status_code == 404
+    assert client.get("/api/orders/by-paypal/bad!").status_code == 404
 
 
 def test_missing_and_bad_order_ids(client):

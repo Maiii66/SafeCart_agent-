@@ -108,6 +108,56 @@ def test_missing_transcriber_is_refused():
     assert result.code == "TRANSCRIPTION_UNAVAILABLE"
 
 
+class FakeFailure:
+    def __init__(self, code="", text="raw secret detail"):
+        self.code = code
+        self.text = text
+
+    def __call__(self, audio, mime_type="audio/wav"):
+        error = RuntimeError(self.text)
+        error.code = self.code
+        raise error
+
+
+def test_empty_successful_transcript_means_no_speech():
+    result = transcribe_clip(AudioClip(data=wav_bytes(1.0), duration_seconds=1.0),
+                             FakeTranscriber("   "))
+    assert result.ok is False
+    assert result.code == "NO_SPEECH"
+
+
+def test_empty_llm_result_means_no_speech():
+    result = transcribe_clip(AudioClip(data=wav_bytes(1.0), duration_seconds=1.0),
+                             FakeFailure("LLM_EMPTY"))
+    assert result.ok is False
+    assert result.code == "NO_SPEECH"
+
+
+def test_missing_llm_configuration_is_reported_as_unavailable():
+    result = transcribe_clip(AudioClip(data=wav_bytes(1.0), duration_seconds=1.0),
+                             FakeFailure("TRANSCRIPTION_UNAVAILABLE"))
+    assert result.ok is False
+    assert result.code == "TRANSCRIPTION_UNAVAILABLE"
+
+
+def test_transcription_failures_use_safe_messages():
+    result = transcribe_clip(AudioClip(data=wav_bytes(1.0), duration_seconds=1.0),
+                             FakeFailure("LLM_RATE_LIMIT", "secret=abc123"))
+    assert result.ok is False
+    assert result.code == "TRANSCRIPTION_FAILED"
+    assert "busy" in result.reason
+    assert "secret" not in result.reason
+    assert "abc123" not in result.reason
+
+
+def test_a_raw_transcription_error_is_never_echoed():
+    result = transcribe_clip(AudioClip(data=wav_bytes(1.0), duration_seconds=1.0),
+                             FakeFailure("", "api_key=SUPERSECRET"))
+    assert result.ok is False
+    assert result.code == "TRANSCRIPTION_FAILED"
+    assert "SUPERSECRET" not in result.reason
+
+
 def test_transcriber_receives_audio_but_result_keeps_no_audio():
     clip = AudioClip(data=wav_bytes(1.0), duration_seconds=1.0)
     transcriber = FakeTranscriber("earbuds under fifty dollars")

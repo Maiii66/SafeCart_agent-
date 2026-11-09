@@ -1,4 +1,6 @@
 # backend/api/orders.py
+import re
+
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.api.schemas import CheckoutResponse, OrdersResponse, OrderSchema
@@ -12,6 +14,16 @@ router = APIRouter()
 def list_orders(limit: int = Query(200, ge=1, le=500)):
     orders = repository.list_orders(limit=limit)
     return OrdersResponse(orders=[OrderSchema(**order) for order in orders])
+
+
+@router.get("/api/orders/by-paypal/{paypal_order_id}", response_model=OrderSchema)
+def get_order_by_paypal(paypal_order_id: str):
+    if not re.match(r"^[A-Za-z0-9_-]{5,64}$", str(paypal_order_id)):
+        raise HTTPException(status_code=404, detail="Order not found")
+    order = repository.get_order_by_paypal_id(paypal_order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return OrderSchema(**order)
 
 
 @router.get("/api/orders/{order_id}", response_model=OrderSchema)

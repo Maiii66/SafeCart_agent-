@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from urllib.parse import urlsplit
 
 ALLOWED_PAYPAL_SANDBOX_HOSTS = frozenset({"sandbox.paypal.com", "www.sandbox.paypal.com"})
+PAYPAL_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{5,64}$")
 
 ERROR_MESSAGES = {
     "BAD_REQUEST": "The backend rejected this request. Check the cart and budget, then try again.",
@@ -34,6 +36,7 @@ ERROR_MESSAGES = {
     "PAYPAL_FAILED": "PayPal did not create an order. No confirmed payment was made.",
     "CAPTURE_FAILED": "PayPal did not confirm the payment capture.",
     "WAITING_APPROVAL": "PayPal is still waiting for you to approve the payment.",
+    "ORDER_NOT_APPROVED": "PayPal is still waiting for you to approve the payment.",
     "BAD_STATE": "The order cannot move to that state.",
     "NO_ORDER": "The backend could not find this order.",
 }
@@ -83,6 +86,58 @@ def is_safe_paypal_sandbox_url(url) -> bool:
     if not parsed.path or not parsed.path.startswith("/"):
         return False
     return True
+
+
+def _query_first(query_params, key) -> str:
+    if not query_params:
+        return ""
+    try:
+        value = query_params.get(key)
+    except Exception:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return _text(value)
+
+
+def _query_flag(query_params, key) -> bool:
+    return _query_first(query_params, key).lower() in ("1", "true", "yes", "on")
+
+
+def _valid_paypal_token(value) -> str:
+    text = _text(value)
+    return text if PAYPAL_ORDER_ID_RE.match(text) else ""
+
+
+def paypal_return_token(query_params) -> str:
+    """The PayPal order id from a real return redirect, or '' for anything else."""
+    token = _valid_paypal_token(
+        _query_first(query_params, "token") or _query_first(query_params, "paypal_order_id")
+    )
+    if not token:
+        return ""
+    marker = _query_flag(query_params, "paypal_return")
+    payer_id = bool(_query_first(query_params, "PayerID"))
+    return token if marker or payer_id else ""
+
+
+def is_paypal_return(query_params) -> bool:
+    return bool(paypal_return_token(query_params))
+
+
+def paypal_cancel_token(query_params) -> str:
+    token = _valid_paypal_token(
+        _query_first(query_params, "token") or _query_first(query_params, "paypal_order_id")
+    )
+    if not token:
+        return ""
+    if is_paypal_return(query_params):
+        return ""
+    return token if _query_flag(query_params, "paypal_cancel") else ""
+
+
+def is_paypal_cancel(query_params) -> bool:
+    return bool(paypal_cancel_token(query_params))
 
 
 def build_candidates(cart):

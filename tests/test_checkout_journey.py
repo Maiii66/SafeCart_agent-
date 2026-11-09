@@ -37,6 +37,8 @@ class FakePayPal:
     def __init__(self):
         self.create_calls = []
         self.capture_calls = []
+        self.get_order_calls = []
+        self.get_order_error = paypal_service.PayPalError("status unavailable")
         self._totals = {}
 
     def create_order(self, items, idempotency_key, reference_id="safecart-order"):
@@ -68,12 +70,23 @@ class FakePayPal:
             self._totals.get(order_id, 0),
         )
 
+    def get_order(self, order_id):
+        self.get_order_calls.append(order_id)
+        if self.get_order_error:
+            raise self.get_order_error
+        return paypal_service.OrderInfo(
+            order_id,
+            "APPROVED",
+            amount_cents=self._totals.get(order_id, 0),
+        )
+
 
 @pytest.fixture
 def paypal(monkeypatch):
     fake = FakePayPal()
     monkeypatch.setattr(paypal_service, "create_order", fake.create_order)
     monkeypatch.setattr(paypal_service, "capture_order", fake.capture_order)
+    monkeypatch.setattr(paypal_service, "get_order", fake.get_order)
     return fake
 
 
@@ -168,6 +181,51 @@ def test_search_approve_checkout_capture_clears_cart_only_after_captured(transpo
     assert flow.should_clear_cart(final["status"]) is True
     assert final["capture_id"] == f"CAP-{final['paypal_order_id']}"
     assert paypal.capture_calls
+
+
+def test_a_paypal_return_can_find_the_order_and_confirm_it(transport, paypal):
+    data = _search()
+    cart = _cart_for(data, NO_STEP_UP_PRODUCT)
+    approval, _ = _approve(cart)
+
+    checkout, error = api_client.execute_checkout(approval["approval_id"])
+    assert error == ""
+    order_id = checkout["order_id"]
+
+    order, error = api_client.get_order(order_id)
+    assert error == ""
+    returned, error = api_client.get_order_by_paypal(order["paypal_order_id"])
+    assert error == ""
+    assert returned["id"] == order_id
+    assert returned["status"] == "CREATED"
+
+    confirmed, error = api_client.complete_order(returned["id"])
+    assert error == ""
+    assert confirmed["code"] == "CAPTURED"
+
+    final, error = api_client.get_order_by_paypal(order["paypal_order_id"])
+    assert error == ""
+    assert flow.is_captured_order(final) is True
+
+
+def test_a_paypal_cancel_can_find_the_order_and_cancel_it(transport, paypal):
+    data = _search()
+    cart = _cart_for(data, NO_STEP_UP_PRODUCT)
+    approval, _ = _approve(cart)
+
+    checkout, error = api_client.execute_checkout(approval["approval_id"])
+    assert error == ""
+    order, error = api_client.get_order(checkout["order_id"])
+    assert error == ""
+
+    cancelled, error = api_client.cancel_order(order["id"])
+    assert error == ""
+    assert cancelled["ok"] is True
+
+    final, error = api_client.get_order_by_paypal(order["paypal_order_id"])
+    assert error == ""
+    assert final["status"] == "CANCELLED"
+    assert paypal.capture_calls == []
 
 
 def test_step_up_is_required_for_an_expensive_signed_approval(transport, paypal):

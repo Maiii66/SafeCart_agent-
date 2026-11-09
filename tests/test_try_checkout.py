@@ -33,6 +33,9 @@ class FakePayPal:
             raise paypal_service.PayPalError("not approved yet", issue="ORDER_NOT_APPROVED")
         return paypal_service.CaptureResult(order_id, "COMPLETED", "CAP-TEST-1", self._total)
 
+    def get_order(self, order_id):
+        raise paypal_service.PayPalError("status unavailable")
+
 
 class ScriptedIO:
     def __init__(self, answers):
@@ -70,6 +73,7 @@ def fake_paypal(monkeypatch):
     fake = FakePayPal()
     monkeypatch.setattr(paypal_service, "create_order", fake.create_order)
     monkeypatch.setattr(paypal_service, "capture_order", fake.capture_order)
+    monkeypatch.setattr(paypal_service, "get_order", fake.get_order)
     return fake
 
 

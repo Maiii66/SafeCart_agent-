@@ -19,6 +19,7 @@ from backend.money import MoneyError, format_usd, parse_dollars_to_cents
 from backend.services import llm
 from frontend import checkout_flow as flow
 from frontend import client as api_client
+from frontend import voice_flow
 
 st.set_page_config(
     page_title="SafeCart",
@@ -552,6 +553,7 @@ def _init_state() -> None:
         "notice": "",
         "cart": [],
         "voice_result": None,
+        "voice_result_hash": "",
         "voice_clip_bytes": None,
         "voice_mime": "audio/wav",
         "pending_search_from_voice": False,
@@ -953,6 +955,109 @@ def _invalidate_checkout_state(clear_success: bool = False) -> None:
         st.session_state.success_message = ""
 
 
+def _clear_paypal_query_params() -> None:
+    try:
+        st.query_params.clear()
+    except Exception:
+        return
+
+
+def _try_confirm_order(order_id) -> bool:
+    """Ask the backend to confirm an approved order. True when its state has settled."""
+    result, result_error = api_client.complete_order(order_id)
+    final, final_error = api_client.get_order(order_id)
+    if isinstance(final, dict):
+        st.session_state.checkout_order = final
+        st.session_state.checkout_status = str(final.get("status") or "")
+        if flow.is_captured_order(final):
+            _mark_captured(final)
+            return True
+        if str(final.get("status")) != "CREATED":
+            _clear_approval_state()
+            return True
+    if result_error or final_error:
+        st.session_state.notice = (
+            "PayPal is still confirming the payment. This page will update automatically."
+        )
+    elif isinstance(result, dict) and result.get("code") == "WAITING_APPROVAL":
+        st.session_state.notice = flow.friendly_error("WAITING_APPROVAL")
+    return False
+
+
+def _resume_returned_order(token: str) -> None:
+    order, error = api_client.get_order_by_paypal(token)
+    st.session_state.page = "Cart"
+    if not isinstance(order, dict):
+        st.session_state.notice = (
+            error or "The PayPal order could not be found yet. Check the payment status in Cart."
+        )
+        return
+
+    order_id = order.get("id")
+    st.session_state.checkout_order_id = order_id
+    st.session_state.checkout_paypal_order_id = token
+    st.session_state.checkout_order = order
+    st.session_state.checkout_status = str(order.get("status") or "")
+    st.session_state.checkout_approve_url = ""
+
+    if flow.is_captured_order(order):
+        _mark_captured(order)
+        return
+    if str(order.get("status")) == "CREATED":
+        _try_confirm_order(order_id)
+
+
+def _cancel_returned_order(token: str) -> None:
+    order, error = api_client.get_order_by_paypal(token)
+    st.session_state.page = "Cart"
+    if not isinstance(order, dict):
+        st.session_state.notice = error or "The PayPal order could not be found."
+        return
+
+    order_id = order.get("id")
+    st.session_state.checkout_order_id = order_id
+    st.session_state.checkout_paypal_order_id = token
+    st.session_state.checkout_order = order
+    st.session_state.checkout_status = str(order.get("status") or "")
+    st.session_state.checkout_approve_url = ""
+
+    if str(order.get("status")) == "CREATED":
+        api_client.cancel_order(order_id)
+        final, _ = api_client.get_order(order_id)
+        if isinstance(final, dict):
+            st.session_state.checkout_order = final
+            st.session_state.checkout_status = str(final.get("status") or "")
+            if flow.is_captured_order(final):
+                _mark_captured(final)
+                return
+    if st.session_state.checkout_status == "CANCELLED":
+        st.session_state.notice = "Payment cancelled on PayPal. The order was not captured."
+    else:
+        st.session_state.notice = (
+            "PayPal returned a cancellation, but the order is "
+            f"{st.session_state.checkout_status or 'in an unknown state'}. "
+            "Check the cart before trying again."
+        )
+
+
+def _handle_paypal_return() -> None:
+    try:
+        params = st.query_params
+    except Exception:
+        return
+
+    if flow.is_paypal_return(params):
+        token = flow.paypal_return_token(params)
+        _clear_paypal_query_params()
+        if token:
+            _resume_returned_order(token)
+    elif flow.is_paypal_cancel(params):
+        token = flow.paypal_cancel_token(params)
+        _clear_paypal_query_params()
+        if token:
+            _cancel_returned_order(token)
+
+
 def _safe_http_url(url) -> bool:
     if not isinstance(url, str):
         return False
@@ -1296,22 +1401,42 @@ def _render_voice_page() -> None:
         "Max 15 seconds. Audio is transcribed and not stored.</p>",
         unsafe_allow_html=True,
     )
-
     audio = st.audio_input("Record your request (max 15s)", key="voice_audio_input")
 
     if audio is not None:
+        audio_bytes = b""
+        audio_mime = "audio/wav"
+        read_ok = True
         try:
             audio_bytes = audio.getvalue()
+            audio_mime = audio.type or "audio/wav"
             st.session_state.voice_clip_bytes = audio_bytes
-            st.session_state.voice_mime = audio.type or "audio/wav"
+            st.session_state.voice_mime = audio_mime
         except Exception:
+            read_ok = False
+            st.session_state.voice_clip_bytes = None
+            st.session_state.voice_result = None
+            st.session_state.voice_result_hash = ""
             st.session_state.notice = "Could not read the recorded audio."
 
-        clip = voice.AudioClip(data=st.session_state.voice_clip_bytes or b"", mime_type=st.session_state.voice_mime)
-        result = voice.transcribe_clip(clip, transcribe=llm.transcribe_audio)
-        st.session_state.voice_result = result
+        fingerprint = voice_flow.clip_fingerprint(audio_bytes)
+        if read_ok and voice_flow.should_transcribe(
+            fingerprint, st.session_state.get("voice_result_hash")
+        ):
+            clip = voice.AudioClip(data=audio_bytes, mime_type=audio_mime)
+            st.session_state.voice_result = voice.transcribe_clip(
+                clip, transcribe=llm.transcribe_audio_checked
+            )
+            st.session_state.voice_result_hash = fingerprint
 
-        if result.ok and result.action == "search" and result.parsed is not None:
+        result = st.session_state.get("voice_result")
+        current_result = (
+            result is not None
+            and bool(fingerprint)
+            and fingerprint == st.session_state.get("voice_result_hash")
+        )
+
+        if current_result and result.ok and result.action == "search" and result.parsed is not None:
             with st.container(border=True, key="voice_preview_card"):
                 st.markdown(
                     '<div class="sc-readback">'
@@ -1333,9 +1458,12 @@ def _render_voice_page() -> None:
                         st.session_state.notice = result.readback
                 except Exception:
                     st.session_state.notice = "Could not process the voice request."
-        else:
+        elif current_result:
+            message = voice_flow.transcription_message(
+                result.code, result.reason or result.readback
+            )
             st.markdown(
-                f'<div class="sc-error">{html.escape(result.reason or result.readback or "Voice request could not be processed.")}</div>',
+                f'<div class="sc-error">{html.escape(message)}</div>',
                 unsafe_allow_html=True,
             )
             if result.code == "TRANSCRIPTION_UNAVAILABLE":
@@ -1344,6 +1472,10 @@ def _render_voice_page() -> None:
                     'Type your request in the Shop tab instead.</div>',
                     unsafe_allow_html=True,
                 )
+    else:
+        st.session_state.voice_result = None
+        st.session_state.voice_result_hash = ""
+        st.session_state.voice_clip_bytes = None
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1379,8 +1511,8 @@ def _render_order_details(order: dict, currency: str, heading: str) -> None:
 
         if status == "CREATED":
             st.caption(
-                "The PayPal order exists, but payment is not complete. Approve it on PayPal, "
-                "then capture it below."
+                "The PayPal order exists, but payment is not complete. Approve it on PayPal; "
+                "SafeCart confirms the payment automatically when you return."
             )
         elif status == "CAPTURED":
             st.caption("The backend confirms this payment as CAPTURED.")
@@ -1766,6 +1898,22 @@ def _render_checkout_section(approval_response, currency: str) -> None:
         st.rerun()
 
 
+@st.fragment(run_every=2.0)
+def _auto_confirm_created_order(order_id) -> None:
+    order = st.session_state.get("checkout_order")
+    if not isinstance(order, dict) or str(order.get("status") or "") != "CREATED":
+        return
+    if st.session_state.get("capture_in_progress"):
+        return
+    st.session_state.capture_in_progress = True
+    try:
+        settled = _try_confirm_order(order_id)
+    finally:
+        st.session_state.capture_in_progress = False
+    if settled:
+        st.rerun(scope="app")
+
+
 def _render_order_section(currency: str) -> None:
     order_id = st.session_state.get("checkout_order_id")
     order = st.session_state.get("checkout_order")
@@ -1809,77 +1957,24 @@ def _render_order_section(currency: str) -> None:
         st.rerun()
 
     order_status = str(order.get("status") or "") if isinstance(order, dict) else ""
-    if order_status == "CREATED" and not st.session_state.get("capture_in_progress"):
+    if order_status == "CREATED":
+        st.caption(
+            "PayPal is confirming the payment. This page checks automatically and updates "
+            "when the payment is captured."
+        )
+        _auto_confirm_created_order(order_id)
         if st.button(
-            "I approved — capture payment",
-            type="primary",
-            key="capture_payment",
+            "Check payment status now",
+            key="check_payment_status",
             use_container_width=True,
         ):
             st.session_state.capture_in_progress = True
             try:
-                preflight, preflight_error = api_client.get_order(order_id)
-                if not isinstance(preflight, dict):
-                    st.session_state.capture_status = "UNKNOWN"
-                    st.session_state.checkout_error = (
-                        preflight_error
-                        or "The order status could not be verified before capture. "
-                        "The cart was kept. Use Refresh order status."
-                    )
-                else:
-                    st.session_state.checkout_order = preflight
-                    preflight_status = str(preflight.get("status") or "")
-                    if flow.is_captured_order(preflight):
-                        _mark_captured(preflight)
-                    elif preflight_status != "CREATED":
-                        st.session_state.capture_status = preflight_status or "UNKNOWN"
-                        st.session_state.checkout_error = flow.friendly_error(
-                            preflight_status,
-                            f"This order is {preflight_status or 'unknown'} and cannot be captured. "
-                            "The cart was kept.",
-                        )
-                    else:
-                        result, result_error = api_client.complete_order(order_id)
-                        final_order, final_error = api_client.get_order(order_id)
-                        if isinstance(final_order, dict):
-                            st.session_state.checkout_order = final_order
-                            final_status = str(final_order.get("status") or "")
-                            if flow.is_captured_order(final_order):
-                                _mark_captured(final_order)
-                            elif final_status == "CREATED":
-                                st.session_state.capture_status = "CREATED"
-                                if result_error:
-                                    st.session_state.checkout_error = (
-                                        "The capture result is uncertain, and the backend still "
-                                        "reports the order as CREATED. The cart was kept. Do not "
-                                        "retry automatically; use Refresh order status."
-                                    )
-                                else:
-                                    code = (
-                                        result.get("code")
-                                        if isinstance(result, dict)
-                                        else "WAITING_APPROVAL"
-                                    )
-                                    st.session_state.checkout_error = flow.friendly_error(
-                                        code or "WAITING_APPROVAL"
-                                    )
-                            else:
-                                st.session_state.capture_status = final_status or "UNKNOWN"
-                                st.session_state.checkout_error = flow.friendly_error(
-                                    final_status,
-                                    "The order did not reach CAPTURED. The cart was kept.",
-                                )
-                        else:
-                            st.session_state.capture_status = "UNKNOWN"
-                            st.session_state.checkout_error = (
-                                final_error
-                                or "The capture result could not be confirmed because the order "
-                                "status could not be fetched. The cart was kept. Do not retry "
-                                "automatically; use Refresh order status."
-                            )
-                _clear_approval_state()
+                settled = _try_confirm_order(order_id)
             finally:
                 st.session_state.capture_in_progress = False
+            if settled:
+                st.rerun(scope="app")
             st.rerun()
 
     if order_status in ("FAILED", "CANCELLED"):
@@ -2040,6 +2135,7 @@ def _render_audit_log_page() -> None:
 
 
 _init_state()
+_handle_paypal_return()
 _refresh_status()
 _render_header()
 
