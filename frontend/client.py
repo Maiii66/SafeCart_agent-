@@ -49,6 +49,9 @@ def api_request(method: str, path: str, payload: dict | None = None, timeout=Non
 
     if response.status_code >= 400:
         if response.status_code == 422:
+            if path == "/api/agent/run":
+                detail = data.get("detail") if isinstance(data, dict) else None
+                return None, str(detail or "The shopping agent request was invalid.")
             return None, "The backend rejected the request as invalid. Check the cart and budget."
         if response.status_code >= 500:
             return None, "The SafeCart backend hit an internal error. No confirmed payment was made."
@@ -71,6 +74,16 @@ def search_basket(items, total_budget_cents, limit: int = 10):
         "POST",
         "/api/basket",
         {"items": list(items), "total_budget_cents": total_budget_cents, "limit": limit},
+    )
+
+
+def run_agent(goal: str, budget_cents=None):
+    return api_request(
+        "POST",
+        "/api/agent/run",
+        {"goal": str(goal or ""), **(
+            {"budget_cents": budget_cents} if budget_cents is not None else {}
+        )},
     )
 
 

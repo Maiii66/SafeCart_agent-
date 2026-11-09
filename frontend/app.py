@@ -19,6 +19,7 @@ from backend.money import MoneyError, format_usd, parse_dollars_to_cents
 from backend.services import llm
 from frontend import checkout_flow as flow
 from frontend import client as api_client
+from frontend.intent import looks_like_spending_rule
 from frontend import voice_flow
 
 st.set_page_config(
@@ -575,6 +576,10 @@ def _init_state() -> None:
         "success_message": "",
         "cart_budget_input": None,
         "policy_proposal": None,
+        "agent_response": None,
+        "agent_error": "",
+        "agent_trace": [],
+        "active_policy": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -612,14 +617,13 @@ def _render_header() -> None:
             st.markdown(f'<div class="sc-logo">SafeCart{badge}</div>', unsafe_allow_html=True)
         with nav_col:
             st.markdown('<div class="sc-nav-row">', unsafe_allow_html=True)
-            tabs = ["Shop", "Voice", "Rules", "Activity", "Log", f"Cart ({cart_count})"]
+            tabs = ["Shop", "Voice", "Activity", "Log", f"Cart ({cart_count})"]
             with st.container(key="nav_tabs"):
                 cols = st.columns(len(tabs))
                 for idx, tab in enumerate(tabs):
                     is_active = (st.session_state.page == "Shop" and tab == "Shop") or (
                         st.session_state.page == "Voice" and tab == "Voice"
-                    ) or (st.session_state.page == "Rules" and tab == "Rules") or (
-                        st.session_state.page == "Activity" and tab == "Activity"
+                    ) or (st.session_state.page == "Activity" and tab == "Activity"
                     ) or (st.session_state.page == "Log" and tab == "Log"
                     ) or (st.session_state.page == "Cart" and tab.startswith("Cart"))
                     with cols[idx]:
@@ -633,8 +637,6 @@ def _render_header() -> None:
                                 st.session_state.page = "Shop"
                             elif tab == "Voice":
                                 st.session_state.page = "Voice"
-                            elif tab == "Rules":
-                                st.session_state.page = "Rules"
                             elif tab == "Activity":
                                 st.session_state.page = "Activity"
                             elif tab == "Log":
@@ -652,6 +654,51 @@ def _render_header() -> None:
                 help="Pause all spending instantly",
             ):
                 _toggle_pause(not paused)
+                st.rerun()
+
+
+def _render_shop_policy() -> None:
+    current, error = api_client.get_policy()
+    if isinstance(current, dict):
+        st.session_state.active_policy = current
+        rows = current.get("description") or []
+        if rows:
+            left, right = st.columns([9, 1])
+            with left:
+                st.caption("Active rules: " + " · ".join(str(row) for row in rows))
+            with right:
+                if st.button("Remove", key="shop_policy_remove"):
+                    _, delete_error = api_client.delete_policy()
+                    st.session_state.notice = delete_error or "Your spending rules were removed."
+                    st.rerun()
+    elif error:
+        st.caption(error)
+
+    proposal = st.session_state.get("policy_proposal")
+    if not isinstance(proposal, dict):
+        return
+    with st.container(border=True):
+        st.markdown("**Save this as a spending rule?**")
+        for row in proposal.get("description") or []:
+            st.write(f"- {row}")
+        for notice in proposal.get("clamped") or []:
+            st.warning(str(notice))
+        st.caption("Nothing is enforced until you confirm.")
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            if st.button("Confirm", key="shop_policy_confirm", type="primary", use_container_width=True):
+                saved, save_error = api_client.confirm_policy(proposal.get("policy") or {})
+                if save_error:
+                    st.session_state.notice = save_error
+                elif isinstance(saved, dict) and saved.get("ok"):
+                    st.session_state.policy_proposal = None
+                    st.session_state.notice = "Your spending rules are now active."
+                else:
+                    st.session_state.notice = "The spending rules could not be saved."
+                st.rerun()
+        with cancel_col:
+            if st.button("Cancel", key="shop_policy_cancel", use_container_width=True):
+                st.session_state.policy_proposal = None
                 st.rerun()
 
 
@@ -722,7 +769,7 @@ def _stage_parsed_request(parsed) -> bool:
     st.session_state.pending_budget_cents = budget
 
     if budget is None:
-        st.session_state.notice = "Add a maximum budget (e.g. 'under $50'), then search again."
+        st.session_state.notice = "Add a maximum budget (e.g. 'under \\$50'), then search again."
         return False
     st.session_state.notice = ""
     return True
@@ -731,7 +778,22 @@ def _stage_parsed_request(parsed) -> bool:
 def _handle_search(text: str) -> None:
     text = text.strip()
     if not text:
-        st.session_state.notice = "Tell me what you want and your maximum budget (e.g. 'earbuds under $50')."
+        st.session_state.notice = "Tell me what you want and your maximum budget (e.g. 'earbuds under \\$50')."
+        return
+    if looks_like_spending_rule(text):
+        st.session_state.shop_response = None
+        st.session_state.basket_response = None
+        st.session_state.readback = None
+        proposal, error = api_client.propose_policy(text)
+        if isinstance(proposal, dict) and proposal.get("ok"):
+            st.session_state.policy_proposal = proposal
+            st.session_state.notice = ""
+        else:
+            st.session_state.policy_proposal = None
+            st.session_state.notice = error or (
+                str(proposal.get("reason")) if isinstance(proposal, dict)
+                else "Those spending rules could not be understood."
+            )
         return
 
     try:
@@ -742,10 +804,23 @@ def _handle_search(text: str) -> None:
 
     can_search = _stage_parsed_request(parsed)
     if can_search:
+        _run_background_agent(text, _basket_budget(parsed))
         if isinstance(st.session_state.get("pending_basket"), dict):
             _run_basket_search()
         else:
             _run_search()
+
+
+def _run_background_agent(goal: str, budget_cents=None) -> None:
+    data, error = api_client.run_agent(goal, budget_cents)
+    if isinstance(data, dict) and data.get("ok"):
+        st.session_state.agent_response = data
+        st.session_state.agent_trace = data.get("trace") or []
+        st.session_state.agent_error = ""
+    else:
+        st.session_state.agent_response = None
+        st.session_state.agent_trace = []
+        st.session_state.agent_error = error or ""
 
 
 def _run_search() -> None:
@@ -823,6 +898,17 @@ def _render_search() -> None:
         _handle_search(query)
 
 
+def _render_decision_trace() -> None:
+    trace = st.session_state.get("agent_trace")
+    if not isinstance(trace, list) or not trace:
+        return
+    with st.expander("How SafeCart decided", expanded=False):
+        for index, entry in enumerate(trace, 1):
+            if isinstance(entry, dict):
+                message = entry.get("message") or entry.get("tool") or "Checked a safety step."
+                st.write(f"{index}. {message}")
+
+
 def _render_suggestions() -> None:
     if (
         st.session_state.get("shop_response")
@@ -838,10 +924,10 @@ def _render_suggestions() -> None:
     )
     cols = st.columns(4)
     suggestions = [
-        ("Wireless earbuds < $50", "find me wireless earbuds under fifty dollars"),
-        ("Phone charger < $25", "find a phone charger under 25 dollars"),
-        ("Mechanical keyboard < $80", "mechanical keyboard under eighty dollars"),
-        ("Smart basket ($100)", "earbuds, phone charger, and a case, $100 total"),
+        ("Wireless earbuds < \\$50", "find me wireless earbuds under fifty dollars"),
+        ("Phone charger < \\$25", "find a phone charger under 25 dollars"),
+        ("Mechanical keyboard < \\$80", "mechanical keyboard under eighty dollars"),
+        ("Smart basket (\\$100)", "earbuds, phone charger, and a case, $100 total"),
     ]
     for idx, (label, query) in enumerate(suggestions):
         with cols[idx]:
@@ -884,10 +970,10 @@ def _render_readback() -> None:
     elif item:
         body = (
             f"Looking for: <mark>{html.escape(str(item))}</mark>. "
-            "Please specify a maximum budget (e.g. 'under $50') before I search."
+            "Please specify a maximum budget (e.g. 'under \\$50') before I search."
         )
     else:
-        body = "I could not tell what you want to buy. Please try another request (e.g. 'earbuds under $50')."
+        body = "I could not tell what you want to buy. Please try another request (e.g. 'earbuds under \\$50')."
 
     with st.container(border=True, key="readback_card"):
         st.markdown(
@@ -1158,6 +1244,20 @@ def _product_card(
         f'<span class="sc-tag">{html.escape(str(flag).replace("_", " "))}</span>'
         for flag in flags
     )
+    guardian_badge = ""
+    if isinstance(guardian_review, dict):
+        risk = str(guardian_review.get("risk_level") or "").lower()
+        if risk in {"medium", "high"}:
+            reasons = guardian_review.get("reasons")
+            reason = (
+                str(reasons[0])
+                if isinstance(reasons, list) and reasons
+                else str(guardian_review.get("summary") or "Additional caution recommended.")
+            )
+            guardian_badge = (
+                f'<span class="sc-tag">Guardian {html.escape(risk)}: '
+                f'{html.escape(reason)}</span>'
+            )
 
     url = str(offer.get("url") or "")
     parsed_url = urlparse(url)
@@ -1178,25 +1278,11 @@ def _product_card(
         f"<h3>{title}</h3>"
         f'<div class="sc-product-meta">{meta_html}</div>'
         '<div class="sc-product-foot">'
-        f"{score_html}{flags_html}{link_html}"
+        f"{score_html}{flags_html}{guardian_badge}{link_html}"
         "</div>"
         "</div>",
         unsafe_allow_html=True,
     )
-
-    if guardian_status != "available":
-        st.caption("Guardian: AI review unavailable; rule checks apply.")
-    elif isinstance(guardian_review, dict):
-        level = str(guardian_review.get("risk_level") or "low").upper()
-        reasons = guardian_review.get("reasons")
-        reasons = reasons if isinstance(reasons, list) else []
-        summary = str(guardian_review.get("summary") or "")
-        with st.container(border=True):
-            st.markdown(f"**Guardian · {html.escape(level)}**")
-            if summary:
-                st.caption(summary)
-            for reason in reasons[:3]:
-                st.write(f"- {reason}")
 
     if show_cart_button:
         if st.button("Add to Cart 🛒", key=f"add_cart_{product.get('id')}_{domain}", type="secondary"):
@@ -1341,6 +1427,7 @@ def _render_basket_results(data: dict) -> None:
         with st.expander("Basket notes", expanded=False):
             for note in notes:
                 st.write(note)
+    _render_decision_trace()
     if data.get("note"):
         st.caption(str(data.get("note")))
 
@@ -1425,6 +1512,7 @@ def _render_results() -> None:
     note = response.get("note")
     if note:
         st.caption(str(note))
+    _render_decision_trace()
 
 
 def _render_search_error() -> None:
@@ -2133,7 +2221,7 @@ def _render_rules_page() -> None:
 
     st.markdown("### Write a rule")
     st.caption(
-        "Example: max $50 per item, max $200 a day, trusted stores only, "
+        "Example: max \\$50 per item, max \\$200 a day, trusted stores only, "
         "max 3 orders a day, don't buy from walmart.com"
     )
     text = st.text_area(
@@ -2142,7 +2230,7 @@ def _render_rules_page() -> None:
         height=110,
         max_chars=500,
         label_visibility="collapsed",
-        placeholder="max $50 per item, trusted stores only, max 3 orders a day",
+        placeholder="max \\$50 per item, trusted stores only, max 3 orders a day",
     )
     if st.button("Review rules", key="policy_propose", type="primary"):
         proposal, error = api_client.propose_policy(text)
@@ -2309,6 +2397,7 @@ if st.session_state.page == "Shop":
     )
     st.markdown('<div id="shop_search"></div>', unsafe_allow_html=True)
     _render_search()
+    _render_shop_policy()
     _render_suggestions()
     _render_notice()
     _render_readback()
@@ -2317,9 +2406,6 @@ if st.session_state.page == "Shop":
 elif st.session_state.page == "Voice":
     _render_notice()
     _render_voice_page()
-elif st.session_state.page == "Rules":
-    _render_notice()
-    _render_rules_page()
 elif st.session_state.page == "Cart":
     _render_notice()
     _render_cart_page()

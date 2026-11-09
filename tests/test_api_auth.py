@@ -38,6 +38,7 @@ PROTECTED = [
     ("POST", "/api/policy/propose", {"text": "max $50 per item"}),
     ("POST", "/api/policy/confirm", {"max_item_cents": 5000}),
     ("DELETE", "/api/policy", None),
+    ("POST", "/api/agent/run", {"goal": "earbuds under $50"}),
 ]
 
 PARAM_TEMPLATES = {

@@ -5,7 +5,7 @@ import uuid
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from backend.api import health, shop, basket, approvals, checkout, orders, logs, status, policy
+from backend.api import health, shop, basket, approvals, checkout, orders, logs, status, policy, agent
 from backend.api.auth import require_api_key
 
 logger = logging.getLogger("safecart")
@@ -23,6 +23,7 @@ app.include_router(orders.router, dependencies=api_dependencies)
 app.include_router(logs.router, dependencies=api_dependencies)
 app.include_router(status.router, dependencies=api_dependencies)
 app.include_router(policy.router, dependencies=api_dependencies)
+app.include_router(agent.router, dependencies=api_dependencies)
 
 
 @app.exception_handler(Exception)

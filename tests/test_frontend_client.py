@@ -306,6 +306,29 @@ def test_search_products_payload(fake_http):
     assert call["json"] == {"query": "earbuds", "max_price_cents": 5000, "limit": 7}
 
 
+def test_run_agent_sends_explicit_parsed_budget(fake_http):
+    fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"ok": True}))
+    data, error = api_client.run_agent(
+        "buy earbuds and a charger under $80",
+        budget_cents=8000,
+    )
+    assert error == ""
+    assert data == {"ok": True}
+    assert fake_http.calls[0]["json"] == {
+        "goal": "buy earbuds and a charger under $80",
+        "budget_cents": 8000,
+    }
+
+
+def test_agent_422_has_agent_specific_error(fake_http):
+    fake_http.respond(
+        lambda method, url, kwargs: FakeResponse(422, {"detail": "budget_cents is invalid"})
+    )
+    data, error = api_client.run_agent("earbuds", 8000)
+    assert data is None
+    assert error == "budget_cents is invalid"
+
+
 def test_create_approval_payload(fake_http):
     fake_http.respond(lambda method, url, kwargs: FakeResponse(200, {"ok": True}))
     candidates = [{"product_id": "p-1", "domain": "shop.example"}]

@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import config
+from backend.api import agent as agent_api
 from backend.agent import approvals
 from backend.main import app
 from backend.services import paypal_service
@@ -80,6 +81,26 @@ def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_agent_goal_without_frontend_budget_is_accepted(client, monkeypatch):
+    seen = {}
+
+    def fake_run(goal, budget_cents):
+        seen.update(goal=goal, budget_cents=budget_cents)
+        return [], {"status": "PROPOSED", "items": []}, "Fallback mode"
+
+    monkeypatch.setattr(agent_api.agent, "run", fake_run)
+    response = client.post(
+        "/api/agent/run",
+        json={"goal": "buy earbuds and a charger under $80"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert seen == {
+        "goal": "buy earbuds and a charger under $80",
+        "budget_cents": None,
+    }
 
 
 def test_root(client):

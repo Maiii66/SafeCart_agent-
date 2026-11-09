@@ -18,6 +18,20 @@ class ShopRequest(StrictRequest):
     limit: int = Field(default=10, ge=1, le=50)
 
 
+class AgentRequest(StrictRequest):
+    goal: str = Field(min_length=1, max_length=500)
+    budget_cents: Optional[int] = Field(default=None, gt=0, le=10_000_000)
+
+
+class AgentResponse(BaseModel):
+    ok: bool
+    code: str
+    reason: str = ""
+    mode: str = ""
+    trace: List[dict] = []
+    proposal: Optional[dict] = None
+
+
 class OfferSchema(BaseModel):
     domain: str
     price_cents: int
