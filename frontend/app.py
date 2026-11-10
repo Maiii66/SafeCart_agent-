@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import html
-import io
 import sys
-import wave
 from pathlib import Path
 from urllib.parse import urlparse
 
