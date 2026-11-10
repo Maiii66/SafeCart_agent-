@@ -41,7 +41,7 @@ def _cents(name, default_dollars):
 
 # ---------- AI ----------
 GEMINI_API_KEY = _text("GEMINI_API_KEY")
-GEMINI_MODEL = _text("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = _text("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ---------- Voice ----------
 VOICE_ENABLED = _flag("VOICE_ENABLED", True)

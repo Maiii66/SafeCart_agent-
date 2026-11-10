@@ -7,7 +7,7 @@ or policy-mutation capability.
 import time
 
 from backend import config
-from backend.agent import guardian, injection, optimizer, policy, shopper, understand
+from backend.agent import guardian, injection, policy, shopper, understand
 from backend.api import utils
 from backend.services import llm
 
