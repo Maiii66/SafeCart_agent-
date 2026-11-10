@@ -11,6 +11,8 @@ from backend.models import Candidate
 from backend.services import catalog
 from database import repository
 
+SEARCH_TOTAL_BUDGET_SECONDS = 45
+
 
 @dataclass(frozen=True)
 class RankedCandidate:
@@ -58,7 +60,7 @@ def _is_positive_budget(value):
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def search_and_rank(query, budget_cents, limit=10, now=None):
+def search_and_rank(query, budget_cents, limit=10, now=None, deadline=None):
     """Search, enforce every check, merge duplicates, and rank what is left."""
     now = time.time() if now is None else now
     fetch = min(max(limit * 3, 10), 50)
@@ -89,7 +91,13 @@ def search_and_rank(query, budget_cents, limit=10, now=None):
         for candidate in kept
         if candidate.product.id in outliers
     }
-    guardian_reviews, guardian_available = guardian.review(kept, rule_flags)
+    guardian_timeout_ms = None
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        guardian_timeout_ms = max(1, int(remaining * 1000))
+    guardian_reviews, guardian_available = guardian.review(
+        kept, rule_flags, timeout_ms=guardian_timeout_ms
+    )
 
     ranked = []
     for candidate in kept:
@@ -171,8 +179,15 @@ def search_basket(items, total_budget_cents, limit=10, now=None):
 
     queries = _clean_queries(items)
     now = time.time() if now is None else now
+    deadline = time.monotonic() + SEARCH_TOTAL_BUDGET_SECONDS
     outcomes = [
-        search_and_rank(query, total_budget_cents, limit=limit, now=now)
+        search_and_rank(
+            query,
+            total_budget_cents,
+            limit=limit,
+            now=now,
+            deadline=deadline,
+        )
         for query in queries
     ]
 

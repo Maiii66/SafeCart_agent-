@@ -97,7 +97,7 @@ def _validate(data, products_by_id):
     return reviews
 
 
-def review(candidates, rule_flags=None):
+def review(candidates, rule_flags=None, timeout_ms=None):
     """Review candidates once, returning (reviews, ai_available).
 
     A failed or invalid Gemini response returns rule-only reviews. The exception
@@ -121,7 +121,11 @@ def review(candidates, rule_flags=None):
     ai_available = True
     if uncached:
         try:
-            parsed = _validate(llm.review_guardian(uncached), {item["id"]: item for item in uncached})
+            kwargs = {} if timeout_ms is None else {"timeout_ms": timeout_ms}
+            parsed = _validate(
+                llm.review_guardian(uncached, **kwargs),
+                {item["id"]: item for item in uncached},
+            )
         except Exception:
             parsed = None
         if parsed is None:

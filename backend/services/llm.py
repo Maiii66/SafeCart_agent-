@@ -125,6 +125,11 @@ _EXPLAIN_PROMPT = (
     "Do not mention payments or approvals. Do not invent prices. Picks: "
 )
 
+PARSE_TIMEOUT_MS = 8000
+AGENT_TIMEOUT_MS = 8000
+GUARDIAN_TIMEOUT_MS = 15000
+EXPLANATION_TIMEOUT_MS = 8000
+
 _TRANSCRIBE_PROMPT = (
     "Transcribe the speech in this audio exactly. Return only the spoken words, "
     "with no commentary, labels, or instructions."
@@ -305,7 +310,7 @@ def parse_request(text):
         return None
     response = _generate(
         _PARSE_PROMPT + cleaned,
-        timeout_ms=8000,
+        timeout_ms=PARSE_TIMEOUT_MS,
         temperature=0,
         max_output_tokens=400,
         response_mime_type="application/json",
@@ -323,7 +328,7 @@ def parse_policy(text):
         return None
     response = _generate(
         _POLICY_PROMPT + cleaned,
-        timeout_ms=8000,
+        timeout_ms=timeout_ms,
         temperature=0,
         max_output_tokens=400,
         response_mime_type="application/json",
@@ -332,7 +337,7 @@ def parse_policy(text):
     return _response_dict(response)
 
 
-def review_guardian(listings):
+def review_guardian(listings, timeout_ms=GUARDIAN_TIMEOUT_MS):
     """Ask Gemini for one structured risk review of up to ten listings."""
     if not isinstance(listings, list) or not listings or len(listings) > 10:
         return None
@@ -379,7 +384,7 @@ def agent_turn(goal, trace, tools):
             model=config.GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
-                http_options=_http_options(8000),
+                http_options=_http_options(AGENT_TIMEOUT_MS),
                 temperature=0,
                 max_output_tokens=800,
                 tools=[types.Tool(function_declarations=declarations)],
@@ -412,7 +417,7 @@ def explain_picks(request_summary, picks):
         return None
     response = _generate(
         _EXPLAIN_PROMPT + body,
-        timeout_ms=8000,
+        timeout_ms=EXPLANATION_TIMEOUT_MS,
         temperature=0.2,
         max_output_tokens=220,
     )

@@ -1,4 +1,6 @@
 # backend/api/shop.py
+import time
+
 from fastapi import APIRouter, HTTPException
 
 from backend import config
@@ -18,13 +20,16 @@ router = APIRouter()
 
 @router.post("/api/shop", response_model=ShopResponse)
 def shop(req: ShopRequest):
+    deadline = time.monotonic() + shopper.SEARCH_TOTAL_BUDGET_SECONDS
     budget = req.max_price_cents if req.max_price_cents is not None else config.MAX_BUDGET_CENTS
     try:
         outcome = shopper.search_and_rank(req.query, budget, limit=req.limit)
     except channel3_service.Channel3Error:
         raise HTTPException(status_code=502, detail="Product search is unavailable right now.")
 
-    explanation, explanation_source = explain.explain(req.query, outcome.ranked)
+    explanation, explanation_source = explain.explain(
+        req.query, outcome.ranked, deadline=deadline
+    )
     return ShopResponse(
         products=[RankedProductSchema(**utils.ranked_to_dict(item)) for item in outcome.ranked],
         source=outcome.source,

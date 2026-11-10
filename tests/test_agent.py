@@ -74,6 +74,19 @@ def test_time_limit_falls_back(monkeypatch):
     assert proposal["status"] == "PROPOSED"
 
 
+def test_agent_timeout_keeps_policy_filtering_in_fallback(monkeypatch):
+    repository.save_policy(policy.clamp_policy({"max_item_cents": 100})[0])
+    monkeypatch.setattr(agent.understand, "parse_request", lambda goal: _parsed())
+    monkeypatch.setattr(llm, "available", lambda: True)
+    monkeypatch.setattr(llm, "agent_turn", lambda *args: None)
+
+    trace, proposal, mode = agent.run("earbuds under $70")
+
+    assert mode == "Fallback mode"
+    assert proposal["items"] == []
+    assert trace[-1]["tool"] == "fallback"
+
+
 def test_policy_budget_is_applied():
     repository.save_policy(policy.clamp_policy({"max_order_cents": 3000})[0])
     assert agent._effective_budget(7000, policy.get_policy()) == 3000

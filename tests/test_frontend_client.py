@@ -249,6 +249,33 @@ def test_api_request_sends_key_payload_and_default_timeout(fake_http, monkeypatc
     assert call["timeout"] == api_client.DEFAULT_TIMEOUT_SECONDS
 
 
+@pytest.mark.parametrize("search_call", [
+    lambda: api_client.search_products("earbuds", 5000),
+    lambda: api_client.search_basket(["earbuds"], 5000),
+    lambda: api_client.run_agent("earbuds under $50", 5000),
+])
+def test_search_calls_use_long_timeout(fake_http, search_call):
+    fake_http.respond(lambda method, url, kwargs: (_ for _ in ()).throw(requests.Timeout("slow")))
+
+    data, error = search_call()
+
+    assert data is None
+    assert error == (
+        "Search is taking longer than usual. Please try again in a moment. "
+        "Nothing was bought."
+    )
+    assert fake_http.calls[0]["timeout"] == api_client.SEARCH_TIMEOUT_SECONDS
+
+
+def test_fast_call_timeout_does_not_mention_payment(fake_http):
+    fake_http.respond(lambda method, url, kwargs: (_ for _ in ()).throw(requests.Timeout("slow")))
+
+    data, error = api_client.api_request("GET", "/api/status")
+
+    assert data is None
+    assert error == "The SafeCart backend took too long to respond. Please try again in a moment."
+
+
 def test_api_request_timeout_is_not_reported_as_payment_failure(fake_http):
     def timeout(method, url, kwargs):
         raise requests.Timeout("slow")

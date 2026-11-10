@@ -2,6 +2,8 @@
 # Explanations are suggestions too. A small template always works, and a Gemini
 # sentence is used only if it passes validation. Nothing here can spend money.
 
+import time
+
 from backend.agent import injection
 from backend.money import format_usd
 from backend.services import llm
@@ -112,8 +114,10 @@ def _validate_ai_text(text):
     return cleaned
 
 
-def _finish(request_summary, picks, template):
+def _finish(request_summary, picks, template, deadline=None):
     if not picks or not llm.available():
+        return template, "template"
+    if deadline is not None and deadline - time.monotonic() <= 8:
         return template, "template"
     ai_text = _validate_ai_text(llm.explain_picks(request_summary, picks))
     if ai_text is None:
@@ -121,15 +125,15 @@ def _finish(request_summary, picks, template):
     return ai_text, "gemini"
 
 
-def explain(request_summary, ranked):
+def explain(request_summary, ranked, deadline=None):
     """Return (text, source) for a ranked result list."""
     picks = [pick for pick in (_ranked_pick(item) for item in ranked or ()) if pick][:3]
     template = template_explanation(request_summary, ranked)
-    return _finish(request_summary, picks, template)
+    return _finish(request_summary, picks, template, deadline)
 
 
-def explain_basket(request_summary, choices, total_cents, budget_cents):
+def explain_basket(request_summary, choices, total_cents, budget_cents, deadline=None):
     """Return (text, source) for an optimal basket."""
     picks = [pick for pick in (_choice_pick(choice) for choice in choices or ()) if pick][:5]
     template = template_basket_explanation(choices, total_cents, budget_cents)
-    return _finish(request_summary, picks, template)
+    return _finish(request_summary, picks, template, deadline)

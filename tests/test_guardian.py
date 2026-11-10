@@ -88,3 +88,14 @@ def test_search_falls_back_when_guardian_fails(monkeypatch, safe_defaults):
     assert outcome.ranked
     assert all("AI review unavailable" in review["summary"]
                for review in outcome.guardian_reviews.values())
+
+
+def test_fast_gemini_failure_returns_rule_results_without_waiting(monkeypatch):
+    monkeypatch.setattr(
+        llm,
+        "review_guardian",
+        lambda listings: (_ for _ in ()).throw(llm.LLMError("LLM_RATE_LIMIT")),
+    )
+    reviews, available = guardian.review([_candidate()], {})
+    assert not available
+    assert reviews["demo-bud-04"]["risk_level"] == "low"

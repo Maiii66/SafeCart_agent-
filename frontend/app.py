@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -613,6 +614,7 @@ def _init_state() -> None:
         "cart_budget_input": None,
         "policy_proposal": None,
         "agent_trace": [],
+        "ai_fallback_note": "",
         "active_policy": None,
         "active_policy_loaded": False,
     }
@@ -842,28 +844,47 @@ def _handle_search(text: str) -> None:
             )
         return
 
-    try:
-        parsed = understand.parse_request(text)
-    except parser.ParseError as error:
-        st.session_state.notice = str(error)
-        return
+    with st.spinner("Searching, this can take up to a minute..."):
+        try:
+            parsed = understand.parse_request(text)
+        except parser.ParseError as error:
+            st.session_state.notice = str(error)
+            return
 
-    can_search = _stage_parsed_request(parsed)
-    if can_search:
-        with st.spinner("Finding safe options and checking the details..."):
-            _run_background_agent(text, _basket_budget(parsed))
-            if isinstance(st.session_state.get("pending_basket"), dict):
-                _run_basket_search()
+        can_search = _stage_parsed_request(parsed)
+        if can_search:
+            pending_basket = st.session_state.get("pending_basket")
+            st.session_state.ai_fallback_note = ""
+            if isinstance(pending_basket, dict):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    agent_future = pool.submit(
+                        api_client.run_agent,
+                        text,
+                        _basket_budget(parsed),
+                    )
+                    _run_basket_search()
+                    _store_agent_result(*agent_future.result())
             else:
+                st.session_state.ai_fallback_note = (
+                    "Showing standard results, AI review was skipped."
+                )
                 _run_search()
 
 
 def _run_background_agent(goal: str, budget_cents=None) -> None:
     data, error = api_client.run_agent(goal, budget_cents)
+    _store_agent_result(data, error)
+
+
+def _store_agent_result(data, error) -> None:
     if isinstance(data, dict) and data.get("ok"):
         st.session_state.agent_trace = data.get("trace") or []
+        st.session_state.ai_fallback_note = ""
     else:
         st.session_state.agent_trace = []
+        st.session_state.ai_fallback_note = (
+            "Showing standard results, AI review was skipped."
+        )
 
 
 def _run_search() -> None:
@@ -872,11 +893,7 @@ def _run_search() -> None:
     if not query or budget is None:
         return
 
-    data, error = _api(
-        "POST",
-        "/api/shop",
-        {"query": query, "max_price_cents": budget, "limit": 10},
-    )
+    data, error = api_client.search_products(query, budget, limit=10)
     if isinstance(data, dict):
         st.session_state.shop_response = data
         st.session_state.basket_response = None
@@ -1376,6 +1393,8 @@ def _render_basket_results(data: dict) -> None:
     )
 
     _render_explanation(data.get("explanation"), data.get("explanation_source"))
+    if st.session_state.get("ai_fallback_note"):
+        st.caption(st.session_state.ai_fallback_note)
 
     if not chosen:
         st.markdown(
@@ -1500,6 +1519,8 @@ def _render_results() -> None:
     )
 
     _render_explanation(response.get("explanation"), response.get("explanation_source"))
+    if st.session_state.get("ai_fallback_note"):
+        st.caption(st.session_state.ai_fallback_note)
 
     if not products:
         st.markdown(
