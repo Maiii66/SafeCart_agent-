@@ -46,8 +46,50 @@ CSS = """
 
 html, body, .stApp, [data-testid="stAppViewContainer"] {
     background: #FFF3D5 !important;
-    color: #2D3B2D;
+    color: #2D3B2D !important;
     font-family: "Manrope", sans-serif;
+}
+
+[data-testid="stMetricLabel"],
+[data-testid="stMetricValue"],
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] *,
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] *,
+[data-testid="stAudioInput"] label,
+[data-testid="stAudioInput"] label * {
+    color: #1B3022 !important;
+}
+
+[data-testid="stAlert"] {
+    background: #FCF8EE !important;
+    border: 1px solid #1B3022 !important;
+}
+
+[data-testid="stAlert"][kind="success"] {
+    background: #DFF3E4 !important;
+    color: #1B3022 !important;
+}
+
+[data-testid="stAlert"][kind="warning"] {
+    background: #FFF4CC !important;
+    color: #1B3022 !important;
+}
+
+[data-testid="stAlert"][kind="info"] {
+    background: #E5F0F7 !important;
+    color: #1B3022 !important;
+}
+
+[data-testid="stAlert"][kind="error"] {
+    background: #FDE8E7 !important;
+    color: #1B3022 !important;
+}
+
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"] *,
+[data-testid="stAlert"] p {
+    color: #1B3022 !important;
 }
 
 [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
@@ -189,7 +231,7 @@ h1, h2, h3, h4, h5, h6,
 }
 
 [data-testid="stForm"] input::placeholder {
-    color: #7C8578 !important;
+    color: #506052 !important;
     opacity: 0.95;
 }
 
@@ -244,7 +286,7 @@ div:not([data-testid="stForm"]) input[data-testid="stTextInputField"] {
 .sc-suggestion-label {
     font-size: 0.78rem;
     font-weight: 700;
-    color: #7C8578;
+    color: #506052;
     margin-right: 0.3rem;
 }
 
@@ -919,7 +961,7 @@ def _render_suggestions() -> None:
         return
     st.markdown(
         '<div style="text-align: center; margin-top: 1.1rem; margin-bottom: 0.35rem;">'
-        '<span style="font-size: 0.76rem; font-weight: 700; color: #7C8578; letter-spacing: 0.08em; text-transform: uppercase;">'
+        '<span style="font-size: 0.76rem; font-weight: 700; color: #506052; letter-spacing: 0.08em; text-transform: uppercase;">'
         'Popular Searches:</span></div>',
         unsafe_allow_html=True,
     )

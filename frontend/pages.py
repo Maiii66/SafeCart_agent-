@@ -90,7 +90,7 @@ def render_audit_log_page(api_request) -> None:
             f'padding: 0.15rem 0.55rem; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">'
             f'{actor}</span> '
             f'<strong style="margin-left: 0.45rem; font-size: 0.88rem; color: #1B3022;">{action}</strong></span>'
-            f'<span style="font-size: 0.75rem; color: #7C8578;">{ts}</span>'
+            f'<span style="font-size: 0.75rem; color: #506052;">{ts}</span>'
             '</div>'
             f'<div style="font-size: 0.86rem; color: #2D3B2D; line-height: 1.45;">{detail}{ref_text}</div>'
             '</div>',
