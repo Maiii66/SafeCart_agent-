@@ -8,7 +8,9 @@ import requests
 from backend import config
 
 DEFAULT_TIMEOUT_SECONDS = 10
+SEARCH_TIMEOUT_SECONDS = 90
 PAYMENT_TIMEOUT_SECONDS = 45
+SEARCH_PATHS = frozenset({"/api/shop", "/api/basket", "/api/agent/run"})
 
 
 def _headers() -> dict:
@@ -27,9 +29,18 @@ def api_request(method: str, path: str, payload: dict | None = None, timeout=Non
             timeout=wait,
         )
     except requests.Timeout:
+        if path in SEARCH_PATHS:
+            return None, (
+                "Search is taking longer than usual. Please try again in a moment. "
+                "Nothing was bought."
+            )
+        if path == "/api/checkout" or path.startswith("/api/orders/"):
+            return None, (
+                "The SafeCart backend took too long to respond. No confirmed payment was made. "
+                "Check the order status before trying again."
+            )
         return None, (
-            "The SafeCart backend took too long to respond. No confirmed payment was made. "
-            "Check the order status before trying again."
+            "The SafeCart backend took too long to respond. Please try again in a moment."
         )
     except requests.RequestException:
         return None, (
@@ -66,6 +77,7 @@ def search_products(query: str, max_price_cents, limit: int = 10):
         "POST",
         "/api/shop",
         {"query": query, "max_price_cents": max_price_cents, "limit": limit},
+        timeout=SEARCH_TIMEOUT_SECONDS,
     )
 
 
@@ -74,6 +86,7 @@ def search_basket(items, total_budget_cents, limit: int = 10):
         "POST",
         "/api/basket",
         {"items": list(items), "total_budget_cents": total_budget_cents, "limit": limit},
+        timeout=SEARCH_TIMEOUT_SECONDS,
     )
 
 
@@ -84,6 +97,7 @@ def run_agent(goal: str, budget_cents=None):
         {"goal": str(goal or ""), **(
             {"budget_cents": budget_cents} if budget_cents is not None else {}
         )},
+        timeout=SEARCH_TIMEOUT_SECONDS,
     )
 
 

@@ -1,4 +1,6 @@
 # backend/api/basket.py
+import time
+
 from fastapi import APIRouter, HTTPException
 
 from backend.agent import explain, shopper
@@ -34,6 +36,7 @@ def _summary(result):
 
 @router.post("/api/basket", response_model=BasketResponse)
 def basket(req: BasketRequest):
+    deadline = time.monotonic() + shopper.SEARCH_TOTAL_BUDGET_SECONDS
     try:
         outcome = shopper.search_basket(
             req.items, req.total_budget_cents, limit=req.limit
@@ -49,6 +52,7 @@ def basket(req: BasketRequest):
         outcome.optimal.chosen,
         outcome.total_cents,
         outcome.total_budget_cents,
+        deadline=deadline,
     )
 
     return BasketResponse(
